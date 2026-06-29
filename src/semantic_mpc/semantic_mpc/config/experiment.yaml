@@ -31,6 +31,11 @@ safe_distance: 1.5
 tree_velocity_radius: 5.0
 tree_entropy_threshold: 0.025
 tree_entropy_start_epsilon: 0.0001
+belief_tracking_threshold: 0.95
+observation_range: 5.0
+active_target_count: 5
+active_obstacle_count: 5
+max_experiment_steps: 1200
 
 # RL liveness supervisor. It remains inactive while either position or entropy
 # progresses. When both stall, it briefly approaches/orbits the nearest

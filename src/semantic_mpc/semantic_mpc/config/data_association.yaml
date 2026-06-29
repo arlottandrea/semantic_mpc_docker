@@ -21,7 +21,7 @@ publish_fruit_markers: false
 publish_path: false
 
 association_distance: 2.5
-observation_distance: 8.0
+observation_distance: 5.0
 default_tree_score: 0.5
 score_midpoint: 5.0
 score_steepness: 10.0

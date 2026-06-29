@@ -49,7 +49,7 @@ def load_params():
         "publish_fruit_markers": _as_bool(rospy.get_param("~publish_fruit_markers", True)),
         "publish_path": _as_bool(rospy.get_param("~publish_path", False)),
         "association_distance": float(rospy.get_param("~association_distance", 2.5)),
-        "observation_distance": float(rospy.get_param("~observation_distance", 8.0)),
+        "observation_distance": float(rospy.get_param("~observation_distance", 5.0)),
         "default_tree_score": float(rospy.get_param("~default_tree_score", 0.5)),
         "score_midpoint": float(rospy.get_param("~score_midpoint", 5.0)),
         "score_steepness": float(rospy.get_param("~score_steepness", 10.0)),
@@ -277,7 +277,9 @@ class DataAssociationNode:
                     )
                     tree_scores[i] = ripe_value - raw_value + self.params["default_tree_score"]
 
-        # Build a 2-column array: [score, -score] per tree
+        # Build valid categorical likelihoods [P(ripe), P(raw)]. Numerical
+        # clipping prevents negative/zero likelihoods from corrupting Bayes.
+        tree_scores = np.clip(tree_scores, 1e-6, 1.0 - 1e-6)
         scores_with_neg = np.stack([tree_scores, 1-tree_scores], axis=1)  # shape (N,2)
 
         # Publish as a 2D multiarray

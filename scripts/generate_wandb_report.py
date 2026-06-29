@@ -19,6 +19,7 @@ import seaborn as sns
 
 
 REPORT_METRICS = [
+    "success_rate",
     "elapsed_time_s",
     "mean_velocity_mps",
     "final_entropy",
@@ -206,6 +207,8 @@ def calculate_run_metrics(metadata, history):
         "run_index": metadata["run_index"],
         "trial_seed": config.get("trial_seed", np.nan),
         "state": metadata["state"],
+        "success_rate": _first_number(summary, ("success",)),
+        "termination_reason": str(summary.get("termination_reason", "unknown")),
         "elapsed_time_s": elapsed,
         "total_distance_m": total_distance,
         "mean_velocity_mps": mean_velocity,
@@ -450,6 +453,11 @@ def fairness_audit(runs):
         "max_linear_accel_mps2": ("max_lin_accel", "max_accel_xy"),
         "max_yaw_accel_radps2": ("max_yaw_accel", "max_accel_yaw"),
         "obstacle_clearance_m": ("obstacle_avoidance_distance", "safe_distance"),
+        "observation_range_m": ("observation_range", "obs_range"),
+        "active_target_count": ("active_target_count", "k_obs", "num_target_trees"),
+        "active_obstacle_count": ("active_obstacle_count", "num_obstacle_trees"),
+        "belief_tracking_threshold": ("belief_tracking_threshold",),
+        "max_experiment_steps": ("max_experiment_steps", "sim_steps"),
     }
     rows = []
     algorithm_values = {}
@@ -560,6 +568,7 @@ def plot_metric_boxplots(runs, output_path):
     rows = int(math.ceil(len(REPORT_METRICS) / columns))
     fig, axes = plt.subplots(rows, columns, figsize=(16, 4.5 * rows), squeeze=False)
     labels = {
+        "success_rate": "Success rate",
         "elapsed_time_s": "Elapsed time [s]",
         "mean_velocity_mps": "Mean velocity [m/s]",
         "final_entropy": "Final entropy [bits]",

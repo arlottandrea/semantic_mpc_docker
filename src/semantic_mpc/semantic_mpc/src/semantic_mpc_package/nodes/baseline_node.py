@@ -37,6 +37,7 @@ class BaselineExperiment:
         self.active_tree_idx = None
         self.observing_tree = threading.Event()
         self.measurement_timer = None
+        self.last_score_sequence = 0
 
         self.prev_cmd = np.zeros(3)
         self.dt = params["dt"]
@@ -123,11 +124,13 @@ class BaselineExperiment:
         )
 
     def measurement_callback(self, _event):
-        scores = self.ros.get_tree_scores(column=0)
-        if scores is None:
-            return
         if self.mode != "mower" and not self.observing_tree.is_set():
             return
+        score_matrix, sequence = self.ros.get_new_tree_scores(self.last_score_sequence)
+        if score_matrix is None:
+            return
+        self.last_score_sequence = sequence
+        scores = score_matrix[:, 0]
 
         if self.mode == "mower":
             for idx in range(min(len(scores), len(self.lambda_values))):
@@ -300,6 +303,7 @@ class BaselineExperiment:
         delta_phi = self.dt * 15.0 * math.pi / 180.0
         start = time.time()
 
+        self.last_score_sequence = self.ros.tree_scores_sequence
         self.observing_tree.set()
         while self.observing_tree.is_set() and not rospy.is_shutdown():
             if time.time() - start > self.params["max_observe_time"]:

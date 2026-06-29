@@ -20,6 +20,7 @@ class RosExperimentContext:
     def __init__(self, params, subscribe_scores=True, publish_cmd_pose=True):
         self.params = params
         self.latest_tree_scores = None
+        self.tree_scores_sequence = 0
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
@@ -59,6 +60,7 @@ class RosExperimentContext:
 
         try:
             self.latest_tree_scores = data.reshape(shape).copy()
+            self.tree_scores_sequence += 1
         except ValueError as exc:
             rospy.logwarn_throttle(5.0, "tree_scores reshape failed: %s", exc)
 
@@ -68,6 +70,19 @@ class RosExperimentContext:
         if column is None:
             return self.latest_tree_scores.copy()
         return self.latest_tree_scores[:, column].copy()
+
+    def get_new_tree_scores(self, last_sequence=0):
+        """Return each received score array at most once to a consumer."""
+        if self.latest_tree_scores is None or self.tree_scores_sequence <= last_sequence:
+            return None, last_sequence
+        return self.latest_tree_scores.copy(), self.tree_scores_sequence
+
+    def wait_for_new_tree_scores(self, last_sequence=0, rate_s=0.05):
+        scores, sequence = self.get_new_tree_scores(last_sequence)
+        while scores is None and not rospy.is_shutdown():
+            rospy.sleep(rate_s)
+            scores, sequence = self.get_new_tree_scores(last_sequence)
+        return scores, sequence
 
     def wait_for_tree_scores(self, rate_s=0.05):
         while self.latest_tree_scores is None and not rospy.is_shutdown():

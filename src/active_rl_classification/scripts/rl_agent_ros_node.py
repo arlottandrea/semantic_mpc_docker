@@ -25,7 +25,7 @@ from semantic_mpc_package.baselines import resolve_mower_heading
 from stable_baselines3 import PPO
 from std_msgs.msg import Bool, Float32, Float32MultiArray, MultiArrayDimension
 
-from active_rl_classification.env import BELIEF_THRESHOLD, OBS_BOUNDS
+from active_rl_classification.env import OBS_BOUNDS
 from active_rl_classification.model import TreeClassFeatureExtractor
 
 
@@ -65,12 +65,18 @@ class RLAgentNode:
     def __init__(self):
         rospy.init_node("rl_agent_ros_node", anonymous=True)
 
-        self.k_obs = int(rospy.get_param("~k_obs", 5))
+        self.k_obs = int(rospy.get_param("~active_target_count", rospy.get_param("~k_obs", 5)))
         self.nclasses = 2
-        self.obs_range = float(rospy.get_param("~obs_range", 5))
+        self.obs_range = float(
+            rospy.get_param("~observation_range", rospy.get_param("~obs_range", 5.0))
+        )
+        self.belief_tracking_threshold = float(
+            rospy.get_param("~belief_tracking_threshold", 0.95)
+        )
+        self.max_experiment_steps = int(rospy.get_param("~max_experiment_steps", 1200))
+        self.active_obstacle_count = max(1, int(rospy.get_param("~active_obstacle_count", 5)))
         self.delta_t = float(rospy.get_param("~dt", rospy.get_param("~delta_t", 0.25)))
         self.step_frequency = float(rospy.get_param("~step_frequency", 1.0 / max(self.delta_t, 1e-6)))
-        self.entropy_target = float(rospy.get_param("~entropy_target", 0.99))
         self.deterministic = bool(rospy.get_param("~deterministic", True))
         self.map_frame = rospy.get_param("~map_frame", "map")
         self.drone_frame = rospy.get_param("~drone_frame", "drone_base_link")
@@ -170,6 +176,8 @@ class RLAgentNode:
             )
 
         self._last_measurement_time = None
+        self._measurement_sequence = 0
+        self._last_used_measurement_sequence = 0
         self.measurement_sub = rospy.Subscriber(
             self.measurement_topic, Float32MultiArray, self._on_measurements, queue_size=1
         )
@@ -222,6 +230,11 @@ class RLAgentNode:
             "mower_heading_random": self.mower_heading_random,
             "k_obs": self.k_obs,
             "obs_range": self.obs_range,
+            "observation_range": self.obs_range,
+            "belief_tracking_threshold": self.belief_tracking_threshold,
+            "active_target_count": self.k_obs,
+            "max_experiment_steps": self.max_experiment_steps,
+            "active_obstacle_count": self.active_obstacle_count,
             "step_frequency": self.step_frequency,
             "control_period": self.delta_t,
             "measurement_period": self.measurement_period,
@@ -239,9 +252,8 @@ class RLAgentNode:
             "rl_stall_progress_distance_m": self.stall_progress_distance_m,
             "rl_stall_entropy_progress": self.stall_entropy_progress,
             "rl_stall_recovery_speed_mps": self.stall_recovery_speed_mps,
-            "entropy_target": self.entropy_target,
             "deterministic": self.deterministic,
-            "termination_criterion": "untracked_entropy_fraction_target",
+            "termination_criterion": "all_trees_belief_confidence_threshold",
             "model_path": model_path,
             "device": device,
             "map_frame": self.map_frame,
@@ -328,10 +340,14 @@ class RLAgentNode:
             return
 
         measurements = data.reshape(-1, self.nclasses)
+        if not np.all(np.isfinite(measurements)):
+            rospy.logwarn_throttle(2.0, "Ignoring non-finite tree-score measurement.")
+            return
         measurements = np.clip(measurements, 1e-6, 1.0)
         measurements /= np.sum(measurements, axis=1, keepdims=True)
         self._latest_measurements = measurements.astype(np.float32)
         self._last_measurement_time = time.monotonic()
+        self._measurement_sequence += 1
 
     def _get_tree_poses_and_types(self):
         rospy.wait_for_service(self.tree_pose_service)
@@ -460,10 +476,11 @@ class RLAgentNode:
         else:
             self._read_drone_pose()
         self.beliefs = self.uniform_proba[None, :].repeat(self.ntargets, axis=0)
-        self.tracked = np.max(self.beliefs, axis=1) >= BELIEF_THRESHOLD
+        self.tracked = np.max(self.beliefs, axis=1) >= self.belief_tracking_threshold
         self._observations = self.uniform_proba[None, :].repeat(self.ntargets, axis=0)
         self._latest_measurements = None
         self._last_measurement_time = None
+        self._last_used_measurement_sequence = self._measurement_sequence
         self._prev_entropy = self.total_entropy(include_tracked=False)
         self._initial_entropy = self.ntargets * self.max_entropy
         self._prev_position = self.drone[:2].copy()
@@ -496,7 +513,6 @@ class RLAgentNode:
                 "time_execution_s": 0.0,
                 "entropy": self._prev_entropy,
                 "entropy_initial": self._initial_entropy,
-                "entropy_stop_value": self.entropy_stop_value,
                 "num_tracked": int(np.sum(self.tracked)),
                 "total_targets": self.ntargets,
                 "distance_m": self.total_distance,
@@ -506,16 +522,12 @@ class RLAgentNode:
             }
         )
         rospy.loginfo(
-            "RL agent reset with %d trees. Initial entropy %.3f; stop at %.3f.",
+            "RL agent reset with %d trees. Initial entropy %.3f; belief threshold %.3f.",
             self.ntargets,
             self._initial_entropy,
-            self.entropy_stop_value,
+            self.belief_tracking_threshold,
         )
         return obs
-
-    @property
-    def entropy_stop_value(self):
-        return max(0.0, (1.0 - self.entropy_target) * self._initial_entropy)
 
     def total_entropy(self, include_tracked=True):
         if self.beliefs is None:
@@ -708,7 +720,11 @@ class RLAgentNode:
         """Project the RL direction onto safe, tangential tree-bypass directions."""
         velocity = np.asarray(world_velocity, dtype=np.float32).copy()
         lookahead = self.safe_distance + self.max_velocity * self.delta_t
-        for tree_id, tree in enumerate(self.trees):
+        obstacle_indices = np.argsort(
+            np.linalg.norm(self.trees - self.drone[:2], axis=1)
+        )[: self.active_obstacle_count]
+        for tree_id in obstacle_indices:
+            tree = self.trees[tree_id]
             radial = self.drone[:2] - tree
             distance = float(np.linalg.norm(radial))
             if distance < 1e-6 or distance > lookahead:
@@ -754,7 +770,8 @@ class RLAgentNode:
         if speed > self.max_velocity:
             limited *= self.max_velocity / speed
         emergency_correction = False
-        for tree in self.trees:
+        for tree_id in obstacle_indices:
+            tree = self.trees[tree_id]
             radial = self.drone[:2] - tree
             distance = float(np.linalg.norm(radial))
             if distance < 1e-6 or distance > lookahead:
@@ -773,8 +790,12 @@ class RLAgentNode:
         return limited.astype(np.float32)
 
     def _update_beliefs_from_measurements(self):
-        if self._latest_measurements is None:
+        if (
+            self._latest_measurements is None
+            or self._measurement_sequence <= self._last_used_measurement_sequence
+        ):
             return 0
+        self._last_used_measurement_sequence = self._measurement_sequence
 
         n = min(self.ntargets, self._latest_measurements.shape[0])
         new_targets_tracked = 0
@@ -790,7 +811,7 @@ class RLAgentNode:
             new_belief = self.beliefs[t] * self._observations[t]
             new_belief /= np.sum(new_belief) + 1e-32
             self.beliefs[t] = new_belief
-            if np.max(new_belief) >= BELIEF_THRESHOLD:
+            if np.max(new_belief) >= self.belief_tracking_threshold:
                 self.tracked[t] = True
                 new_targets_tracked += 1
 
@@ -820,7 +841,7 @@ class RLAgentNode:
         self.entropy_metrics.update(self.metrics.elapsed(), self.beliefs)
         self._publish_obs(obs)
 
-        curr_entropy = self.total_entropy(include_tracked=False)
+        curr_entropy = self.total_entropy(include_tracked=True)
         self._prev_entropy = curr_entropy
         self.entropy_pub.publish(Float32(data=curr_entropy))
 
@@ -879,7 +900,8 @@ class RLAgentNode:
         rate = rospy.Rate(self.step_frequency)
         while (
             not rospy.is_shutdown()
-            and self.total_entropy(include_tracked=False) > self.entropy_stop_value
+            and not bool(np.all(self.tracked))
+            and self.steps < self.max_experiment_steps
         ):
             try:
                 _, _, info = self.step()
@@ -901,7 +923,15 @@ class RLAgentNode:
             rate.sleep()
 
         self.done_pub.publish(Bool(data=True))
-        final_entropy = self.total_entropy(include_tracked=False)
+        final_entropy = self.total_entropy(include_tracked=True)
+        all_tracked = bool(np.all(self.tracked))
+        termination_reason = (
+            "all_trees_tracked"
+            if all_tracked
+            else "ros_shutdown"
+            if rospy.is_shutdown()
+            else "max_experiment_steps"
+        )
         inference_times = np.asarray(self.policy_inference_times_ms, dtype=float)
         compute_times = np.asarray(self.controller_compute_times_ms, dtype=float)
         summary = self.metrics.finish(
@@ -914,6 +944,8 @@ class RLAgentNode:
                 "entropy_reduction": self._initial_entropy - final_entropy,
                 "num_tracked_final": int(np.sum(self.tracked)) if self.tracked is not None else 0,
                 "total_targets": self.ntargets,
+                "termination_reason": termination_reason,
+                "success": all_tracked,
                 "rl_liveness_recovery_count": self.stall_recovery_count,
                 "rl_liveness_recovery_steps": self.stall_recovery_steps,
                 **self.velocity_metrics.summary(),

@@ -43,6 +43,7 @@ class NeuralMPC:
             self.params.get("random_initial_state", rospy.get_param("~initial_randomic", initial_randomic))
         )
         self._load_runtime_params()
+        self._validate_comparability()
         self.run_root = self.params["run_dir"]
 
         self.l4c_nn = load_l4casadi_models(self.params)
@@ -70,19 +71,43 @@ class NeuralMPC:
         self.nx = int(self.params["state_dim"])
         self.n_control = int(self.params["control_dim"])
         self.n_state = int(self.params["optimizer_state_dim"])
-        self.num_target_trees = int(self.params["num_target_trees"])
-        self.num_obstacle_trees = int(self.params["num_obstacle_trees"])
-        self.sim_steps = int(self.params["sim_steps"])
+        self.num_target_trees = int(
+            self.params.get("active_target_count", self.params["num_target_trees"])
+        )
+        self.params["num_target_trees"] = self.num_target_trees
+        self.num_obstacle_trees = int(
+            self.params.get("active_obstacle_count", self.params["num_obstacle_trees"])
+        )
+        self.params["num_obstacle_trees"] = self.num_obstacle_trees
+        self.sim_steps = int(self.params.get("max_experiment_steps", self.params["sim_steps"]))
         self.initial_pose_margin = float(self.params["initial_pose_margin"])
         self.initial_pose_sleep = float(self.params["initial_pose_sleep"])
         self.wait_sleep = float(self.params["wait_sleep"])
         self.loop_extra_sleep = float(self.params["loop_extra_sleep"])
         self.belief_update_period = int(self.params["belief_update_period"])
-        self.entropy_stop_threshold = float(self.params["entropy_stop_threshold"])
-        self.entropy_selection_threshold = float(self.params["entropy_selection_threshold"])
+        self.belief_tracking_threshold = float(self.params["belief_tracking_threshold"])
+        self.observation_range = float(self.params["observation_range"])
         self.num_runs = int(self.params["num_runs"])
         self.run_index_offset = int(self.params["run_index_offset"])
         self.base_seed = int(self.params["seed"])
+
+    def _validate_comparability(self):
+        if self.num_target_trees != int(self.params["active_target_count"]):
+            raise ValueError("NMPC target count must equal the RL active_target_count")
+        if self.num_obstacle_trees != int(self.params["active_obstacle_count"]):
+            raise ValueError("NMPC obstacle count must equal the shared active_obstacle_count")
+        if self.num_target_trees < 1 or self.num_obstacle_trees < 1:
+            raise ValueError("active target and obstacle counts must be positive")
+        if not np.isclose(self.params["nn_threshold"], self.observation_range):
+            raise ValueError("NMPC surrogate gate nn_threshold must equal observation_range")
+        if list(self.params["model_labels"]) != ["ripe", "raw"]:
+            raise ValueError("NMPC belief/model class order must be ['ripe', 'raw']")
+        if not 0.5 < self.belief_tracking_threshold < 1.0:
+            raise ValueError("belief_tracking_threshold must be between 0.5 and 1.0")
+        if self.belief_update_period != 1:
+            raise ValueError("belief_update_period must be 1; new evidence is already sequence-gated")
+        if not np.isclose(self.dt, self.params["measurement_period"]):
+            raise ValueError("NMPC control and measurement periods must match the shared protocol")
 
     def robot_state_update(self):
         pose = self.ros.robot_pose(default=None)
@@ -127,34 +152,33 @@ class NeuralMPC:
             )
         )
 
-    def get_target_tree_indices(self, robot_position, num_target=None):
+    def get_target_tree_selection(self, robot_position, num_target=None):
+        """Select the same nearest-untracked cardinality exposed to the RL policy."""
         num_target = self.num_target_trees if num_target is None else num_target
-        robot_pos = np.array(robot_position).flatten()
-        distances = np.linalg.norm(self.trees_pos[:, :2] - robot_pos, axis=1)
-        entropy = self.entropy_entire_field(self.beliefs_k).full()
-        candidate_indices = np.where(entropy > self.entropy_selection_threshold)[0]
-
-        if candidate_indices.size == 0:
-            rospy.logwarn_throttle(5.0, "No trees above entropy threshold; selecting nearest trees.")
-            return np.argsort(distances)[:num_target]
-
-        sorted_candidates = candidate_indices[np.argsort(distances[candidate_indices])]
-        if sorted_candidates.size < num_target:
-            repeats = int(np.ceil(num_target / sorted_candidates.size))
-            sorted_candidates = np.tile(sorted_candidates, repeats)[:num_target]
-        return sorted_candidates[:num_target]
+        beliefs = np.asarray(self.beliefs_k.full(), dtype=float)
+        return self.optimizer.select_nearest_untracked(
+            self.trees_pos,
+            beliefs,
+            robot_position,
+            num_target,
+            self.belief_tracking_threshold,
+        )
 
     def get_nearest_tree_indices(self, robot_position, num_obstacle=None):
         num_obstacle = self.num_obstacle_trees if num_obstacle is None else num_obstacle
         robot_pos = np.array(robot_position).flatten()
         distances = np.linalg.norm(self.trees_pos - robot_pos, axis=1)
-        return np.argsort(distances)[:num_obstacle]
+        selected = np.argsort(distances)[:num_obstacle].astype(int).tolist()
+        padding_index = selected[-1] if selected else 0
+        while len(selected) < num_obstacle:
+            selected.append(padding_index)
+        return np.asarray(selected, dtype=int)
 
     def run_simulation(self, run_index=None):
         if run_index is not None:
             self.run_index = int(run_index)
         self.params["algorithm"] = "nmpc"
-        self.params["termination_criterion"] = "all_tree_entropy_threshold"
+        self.params["termination_criterion"] = "all_trees_belief_confidence_threshold"
         self.params["run_index"] = self.run_index
         self.params["trial_seed"] = self.base_seed + self.run_index
         self.params["run_dir"] = os.path.join(self.run_root, "nmpc_run_{:03d}".format(self.run_index))
@@ -200,9 +224,12 @@ class NeuralMPC:
         x_dec_prev = None
         lam_g_prev = None
         mpc_step = None
+        last_score_sequence = 0
+        termination_reason = "max_experiment_steps"
 
         for mpciter in range(self.sim_steps):
             if rospy.is_shutdown():
+                termination_reason = "ros_shutdown"
                 break
 
             loop_start = time.time()
@@ -210,16 +237,45 @@ class NeuralMPC:
             current_state = self._wait_for_robot_state()
             x_k = ca.vertcat(ca.DM(current_state), vx_k)
 
-            scores = self.ros.wait_for_tree_scores()
-            if self.belief_update_period > 0 and mpciter % self.belief_update_period == 0:
-                self.beliefs_k = self.optimizer.bayes(self.beliefs_k, ca.DM(scores))
+            if last_score_sequence == 0:
+                scores, score_sequence = self.ros.wait_for_new_tree_scores(last_score_sequence)
+            else:
+                scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
+            if (
+                scores is not None
+                and self.belief_update_period > 0
+                and mpciter % self.belief_update_period == 0
+            ):
+                distances = np.linalg.norm(self.trees_pos - np.asarray(current_state[:2]), axis=1)
+                beliefs = np.asarray(self.beliefs_k.full(), dtype=float)
+                update_mask = (
+                    (distances <= self.observation_range)
+                    & (np.max(beliefs, axis=1) < self.belief_tracking_threshold)
+                )
+                last_score_sequence = score_sequence
+                try:
+                    beliefs = self.optimizer.bayes_numpy(
+                        beliefs,
+                        scores,
+                        update_mask=update_mask,
+                    )
+                except ValueError as exc:
+                    rospy.logerr_throttle(5.0, "Skipping invalid tree-score evidence: %s", exc)
+                else:
+                    self.beliefs_k = ca.DM(beliefs)
+
+            tracked = np.max(np.asarray(self.beliefs_k.full()), axis=1) >= self.belief_tracking_threshold
+            if bool(np.all(tracked)):
+                rospy.loginfo("All trees reached belief confidence %.3f.", self.belief_tracking_threshold)
+                termination_reason = "all_trees_tracked"
+                break
 
             publish_visualization = mpciter % self.visualization_publish_period == 0
             if publish_visualization and self.tree_markers_pub is not None:
                 self.tree_markers_pub.publish(create_tree_markers(self.trees_pos, self.beliefs_k.full()))
 
             robot_xy = np.array(current_state[:2])
-            target_indices = self.get_target_tree_indices(robot_xy)
+            target_indices, target_mask = self.get_target_tree_selection(robot_xy)
             obstacle_indices = self.get_nearest_tree_indices(robot_xy)
             target_trees = self.trees_pos[target_indices]
             obstacle_trees = self.trees_pos[obstacle_indices]
@@ -232,6 +288,7 @@ class NeuralMPC:
                     mpc_step, u, x_traj, x_dec_prev, lam_g_prev = self.optimizer.mpc_opt(
                         target_trees,
                         target_lambdas,
+                        target_mask,
                         obstacle_trees,
                         lb,
                         ub,
@@ -241,10 +298,11 @@ class NeuralMPC:
                     warm_start = False
                 else:
                     p0_val = ca.vertcat(
-                        x_k,
-                        ca.reshape(target_trees, 2 * self.num_target_trees, 1),
-                        ca.reshape(target_lambdas, 2 * self.num_target_trees, 1),
-                        ca.reshape(obstacle_trees, 2 * self.num_obstacle_trees, 1),
+                        ca.DM(x_k),
+                        ca.reshape(ca.DM(target_trees), 2 * self.num_target_trees, 1),
+                        ca.reshape(ca.DM(target_lambdas), 2 * self.num_target_trees, 1),
+                        ca.reshape(ca.DM(target_mask), self.num_target_trees, 1),
+                        ca.reshape(ca.DM(obstacle_trees), 2 * self.num_obstacle_trees, 1),
                     )
                     u, x_traj, x_dec_prev, lam_g_prev = mpc_step(p0_val, x_dec_prev, lam_g_prev)
             except Exception as exc:
@@ -289,10 +347,6 @@ class NeuralMPC:
             )
 
             rospy.loginfo_throttle(5.0, "Entropy: %s", entropy_value)
-            if all(value <= self.entropy_stop_threshold for value in entropy_k.full().flatten()):
-                rospy.loginfo("Entropy target reached.")
-                break
-
             self._sleep_for_rate(rate, loop_start, mpciter)
 
         self._finish_metrics(
@@ -306,6 +360,7 @@ class NeuralMPC:
             sum_trans_speed,
             sim_start_time,
             durations,
+            termination_reason,
         )
         return all_trajectories, entropy_history, lambda_history, durations, self.l4c_nn, self.trees_pos, lb, ub
 
@@ -341,6 +396,7 @@ class NeuralMPC:
         sum_trans_speed,
         sim_start_time,
         durations,
+        termination_reason,
     ):
         total_execution_time = time.time() - sim_start_time
         final_entropy = entropy_history[-1] if entropy_history else initial_entropy
@@ -358,6 +414,15 @@ class NeuralMPC:
                 "mean_controller_compute_time_ms": float(np.mean(durations) * 1000.0) if durations else np.nan,
                 "median_controller_compute_time_ms": float(np.median(durations) * 1000.0) if durations else np.nan,
                 "p95_controller_compute_time_ms": float(np.percentile(durations, 95) * 1000.0) if durations else np.nan,
+                "termination_reason": termination_reason,
+                "success": termination_reason == "all_trees_tracked",
+                "num_tracked_final": int(
+                    np.sum(
+                        np.max(np.asarray(self.beliefs_k.full()), axis=1)
+                        >= self.belief_tracking_threshold
+                    )
+                ),
+                "total_targets": self.num_total_trees,
             },
         )
         rospy.loginfo(

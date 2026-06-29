@@ -125,6 +125,45 @@ untracked tree. Raw policy actions, applied actions, active recovery steps, and 
 intervention count are recorded; experiments using interventions should be described as
 RL plus liveness filtering rather than pure RL.
 
+### RL/NMPC comparability protocol
+
+The shared evaluation parameters intentionally align the information available to RL and
+NMPC. Both use a 0.25 s control period, the five nearest untracked trees, a 5 m observation
+range, belief confidence 0.95, five active obstacles, a 1200-step budget, and the same velocity, acceleration,
+and 1.5 m obstacle-clearance limits. Padded NMPC target slots have a zero objective mask;
+they are not repeated evidence or repeated cost.
+
+| Concept | Active RL | NMPC |
+|---|---|---|
+| Active trees | 5 nearest untracked | Same 5, with explicit padding mask |
+| Observation | Updates within 5 m | Same |
+| Completed tree | Maximum belief >= 0.95 | Same |
+| Bayes | Each new score message once | Same |
+| Attraction | `0.1` progress toward observation range | `0.1` terminal distance excess outside 5 m |
+| Information | Real entropy reduction | Expected information gain over both measurement outcomes |
+| Motion cost | `0.01` normalized linear/yaw action | `0.01` normalized linear/yaw velocity |
+| Obstacles | Five nearest, reactive one-step lookahead | Same five, hard constraints over the prediction horizon |
+
+The NMPC objective contains only normalized motion cost, a small acceleration
+regularizer, bounded expected information gain, and terminal attraction to the
+observation range. Expected information gain marginalizes both possible classifications
+using the class-conditional perception models; it no longer selects a perception model
+from the current MAP class or fabricates a deterministic future measurement. Accumulated
+information for each tree is capped by that tree's current entropy.
+The RL training-only sparse bonuses for a newly tracked tree and full completion are not
+converted into smooth NMPC penalties: completion is enforced by the shared confidence
+criterion, avoiding an arbitrary sigmoid approximation in the optimizer.
+
+The Bayesian update is normalized, finite, range-gated, and consumes each ROS score
+message once. It treats `[P(ripe), P(raw)]` from the detector as categorical evidence;
+this is valid only to the extent that detector scores are calibrated likelihoods and
+successive camera frames provide useful new evidence. Calibration should therefore be
+checked empirically, rather than compensated with an undocumented confidence multiplier.
+
+Obstacle handling remains deliberately algorithm-specific: RL uses a reactive tangential
+filter, while NMPC enforces predictive distance constraints. The clearance and dynamics
+limits are identical, and the report audits their observed compliance.
+
 ## Connect Unity
 
 1. Start one Docker controller profile.
