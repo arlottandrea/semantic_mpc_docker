@@ -154,7 +154,7 @@ class RLAgentNode:
             "wandb_log_period": float(rospy.get_param("~wandb_log_period", 1.0)),
             "run_dir": rospy.get_param(
                 "~run_dir",
-                os.path.join(package_root(), "artifacts", "ros", "wandb"),
+                "/runs/rl",
             ),
             "k_obs": self.k_obs,
             "obs_range": self.obs_range,

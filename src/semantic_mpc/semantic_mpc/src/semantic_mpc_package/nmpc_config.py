@@ -76,7 +76,7 @@ def default_nmpc_params():
         "publish_tree_markers": True,
         "visualization_publish_period": 5,
         "tree_service": "/obj_pose_srv",
-        "run_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../artifacts/baselines"),
+        "run_dir": "/runs/nmpc_runs",
         "wandb_project": "semantic_mpc",
         "wandb_entity": "",
         "wandb_mode": "offline",

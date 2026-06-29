@@ -1,5 +1,5 @@
 initial_randomic: true
-run_dir: "nmpc_runs"
+run_dir: "/runs/nmpc_runs"
 
 hidden_size: 64
 hidden_layers: 3
