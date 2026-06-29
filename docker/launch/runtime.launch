@@ -44,6 +44,7 @@
           output="screen" ns="agent_0" required="true">
       <param name="model_path" value="$(arg rl_policy_path)"/>
       <param name="device" value="auto"/>
+      <param name="run_dir" value="/runs/rl"/>
     </node>
   </group>
 
