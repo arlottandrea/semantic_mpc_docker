@@ -46,12 +46,14 @@ COPY docker /workspace/docker
 
 # These links may point at absent build-time paths; Compose mounts the runtime
 # model directories at /models when the container starts.
-RUN ln -sfn /models/nmpc/ripe /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/ripe \
+RUN mkdir -p /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models \
+ && ln -sfn /models/nmpc/ripe /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/ripe \
  && ln -sfn /models/nmpc/raw /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/raw
 
 RUN bash -lc 'source /opt/ros/noetic/setup.bash && cd /workspace && catkin_make -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 
-RUN groupadd --gid 1000 app \
+RUN ln -sfn /usr/bin/python3 /usr/local/bin/python \
+ && groupadd --gid 1000 app \
  && useradd --uid 1000 --gid app --create-home app \
  && mkdir -p /runs/ros/log \
  && chown -R app:app /workspace /runs

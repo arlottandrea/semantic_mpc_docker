@@ -1,9 +1,9 @@
 import numpy as np
 import cv2
-from typing import List, Union
+from typing import List, Tuple, Union
 
 
-def get_random_color(seed: int = None) -> tuple[int, int, int]:
+def get_random_color(seed: int = None) -> Tuple[int, int, int]:
     """
     Returns a fixed, bright light-green color.
 
