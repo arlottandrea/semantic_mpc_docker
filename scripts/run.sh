@@ -22,5 +22,6 @@ else
   compose_args+=(-f compose.gpu.yaml)
 fi
 
+mkdir -p runs/ros/log
 ./scripts/doctor.sh "${controller}"
 exec docker compose "${compose_args[@]}" --profile "${controller}" up --build "${controller}"
