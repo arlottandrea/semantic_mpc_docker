@@ -27,11 +27,14 @@ RUN apt-get update \
 WORKDIR /workspace
 
 COPY docker/requirements-linux.txt /tmp/requirements-linux.txt
+# ROS Noetic installs PyYAML 5.3.1 with distutils. Overlay it in
+# /usr/local instead of asking pip to uninstall the apt-owned files.
 RUN python3 -m pip install --no-cache-dir --upgrade \
       pip==24.3.1 setuptools==75.3.2 wheel==0.45.1 \
  && python3 -m pip install --no-cache-dir \
       torch==2.4.1+cu118 torchvision==0.19.1+cu118 \
       --index-url https://download.pytorch.org/whl/cu118 \
+ && python3 -m pip install --no-cache-dir --ignore-installed PyYAML==6.0.1 \
  && python3 -m pip install --no-cache-dir -r /tmp/requirements-linux.txt
 
 # L4CasADi must see the already-installed PyTorch package during compilation.
