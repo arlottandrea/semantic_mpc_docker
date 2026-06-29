@@ -122,6 +122,10 @@ class CasadiMpcStepGenerator:
             "ipopt",
             {
                 "print_time": False,
+<<<<<<< HEAD
+=======
+                "verbose": False,
+>>>>>>> ee87ff70deff38d328f365837d10c4d97d5f2b51
                 "ipopt": {
                     "print_level": 0,
                     "max_iter": self.ipopt_max_iter,

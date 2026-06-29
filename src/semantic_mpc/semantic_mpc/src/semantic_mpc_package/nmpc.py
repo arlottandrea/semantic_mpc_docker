@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import math
+import os
 import time
 
 import casadi as ca
@@ -9,6 +10,7 @@ from nav_msgs.msg import Path
 from visualization_msgs.msg import MarkerArray
 
 from semantic_mpc_package.experiment_metrics import WandbMetrics
+from semantic_mpc_package.baselines import resolve_mower_heading
 from semantic_mpc_package.nmpc_config import default_nmpc_params, load_semantic_mpc_params
 from semantic_mpc_package.nmpc_model import load_l4casadi_models
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
@@ -20,7 +22,8 @@ from semantic_mpc_package.ros_experiment import (
     BeliefState,
     RosExperimentContext,
     get_domain,
-    random_initial_pose,
+    normalize_angle,
+    seeded_corner_initial_pose,
 )
 
 
@@ -36,8 +39,11 @@ class NeuralMPC:
             self.params["run_dir"] = run_dir
 
         self.run_index = run_index
-        self.initial_randomic = bool(rospy.get_param("~initial_randomic", initial_randomic))
+        self.initial_randomic = bool(
+            self.params.get("random_initial_state", rospy.get_param("~initial_randomic", initial_randomic))
+        )
         self._load_runtime_params()
+        self.run_root = self.params["run_dir"]
 
         self.l4c_nn = load_l4casadi_models(self.params)
         self.optimizer = NmpcOptimizer(self.params, self.l4c_nn)
@@ -74,6 +80,9 @@ class NeuralMPC:
         self.belief_update_period = int(self.params["belief_update_period"])
         self.entropy_stop_threshold = float(self.params["entropy_stop_threshold"])
         self.entropy_selection_threshold = float(self.params["entropy_selection_threshold"])
+        self.num_runs = int(self.params["num_runs"])
+        self.run_index_offset = int(self.params["run_index_offset"])
+        self.base_seed = int(self.params["seed"])
 
     def robot_state_update(self):
         pose = self.ros.robot_pose(default=None)
@@ -81,13 +90,42 @@ class NeuralMPC:
             return None
         return pose.tolist()
 
-    def generate_random_initial_state(self, lb, ub):
-        return random_initial_pose(
+    def generate_seeded_initial_state(self):
+        start_pose = self.params.get("start_pose")
+        if start_pose not in (None, "", []):
+            return np.asarray(start_pose, dtype=float).flatten()[:3]
+        heading_direction = None if self.params["mower_heading_random"] else self.params["mower_heading"]
+        heading = resolve_mower_heading(heading_direction, seed=self.params["trial_seed"])
+        return seeded_corner_initial_pose(
             self.trees_pos,
-            lb,
-            ub,
-            margin=self.initial_pose_margin,
-        ).reshape(-1, 1)
+            self.params["trial_seed"],
+            margin=self.params["initial_corner_margin"],
+            heading=heading,
+        )
+
+    def apply_initial_pose(self, initial_pose):
+        initial_pose = np.asarray(initial_pose, dtype=float).flatten()[:3]
+        timeout = max(0.1, float(self.params["initial_pose_timeout"]))
+        publish_period = max(0.02, float(self.params["initial_pose_publish_period"]))
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self.ros.publish_pose(initial_pose)
+            current = self.robot_state_update()
+            if current is not None:
+                current = np.asarray(current, dtype=float)
+                position_error = np.linalg.norm(current[:2] - initial_pose[:2])
+                heading_error = abs(normalize_angle(current[2] - initial_pose[2]))
+                if (
+                    position_error <= self.params["initial_pose_tolerance"]
+                    and heading_error <= self.params["initial_heading_tolerance"]
+                ):
+                    return current.tolist()
+            rospy.sleep(publish_period)
+        raise RuntimeError(
+            "NMPC trial {} seed {} did not reach its initial pose within {:.1f}s.".format(
+                self.run_index, self.params["trial_seed"], timeout
+            )
+        )
 
     def get_target_tree_indices(self, robot_position, num_target=None):
         num_target = self.num_target_trees if num_target is None else num_target
@@ -112,15 +150,22 @@ class NeuralMPC:
         distances = np.linalg.norm(self.trees_pos - robot_pos, axis=1)
         return np.argsort(distances)[:num_obstacle]
 
-    def run_simulation(self):
+    def run_simulation(self, run_index=None):
+        if run_index is not None:
+            self.run_index = int(run_index)
+        self.params["algorithm"] = "nmpc"
+        self.params["termination_criterion"] = "all_tree_entropy_threshold"
+        self.params["run_index"] = self.run_index
+        self.params["trial_seed"] = self.base_seed + self.run_index
+        self.params["run_dir"] = os.path.join(self.run_root, "nmpc_run_{:03d}".format(self.run_index))
+        self.beliefs_k = ca.DM.ones(self.num_total_trees, 2) * 0.5
+        self.ros.latest_tree_scores = None
         dynamics = self.optimizer.kin_model(self.n_state, self.n_control, self.dt)
         lb, ub = get_domain(self.trees_pos)
         current_state = None
 
         if self.initial_randomic:
-            current_state = self.generate_random_initial_state(lb, ub)
-            self.ros.publish_pose(current_state)
-            rospy.sleep(self.initial_pose_sleep)
+            current_state = self.apply_initial_pose(self.generate_seeded_initial_state())
 
         rospy.loginfo("Waiting for robot pose...")
         while current_state is None and not rospy.is_shutdown():
@@ -148,6 +193,7 @@ class NeuralMPC:
         initial_entropy = BeliefState.categorical_entropy_sum(self.beliefs_k.full())
         metrics = WandbMetrics("nmpc", self.run_index, self.params)
         metrics.start()
+        metrics.entropy_metrics.update(0.0, self.beliefs_k.full())
 
         rate = rospy.Rate(max(1, int(1 / self.dt)))
         warm_start = True
@@ -179,7 +225,7 @@ class NeuralMPC:
             obstacle_trees = self.trees_pos[obstacle_indices]
             target_lambdas = self.beliefs_k[target_indices, :]
 
-            step_start = time.time()
+            step_start = time.perf_counter()
             try:
                 if warm_start or mpc_step is None:
                     rospy.loginfo("Running MPC opt (cold start).")
@@ -205,7 +251,7 @@ class NeuralMPC:
                 rospy.logerr("Error during MPC optimization at step %d: %s", mpciter, exc)
                 return
 
-            step_duration = time.time() - step_start
+            step_duration = time.perf_counter() - step_start
             durations.append(step_duration)
             metrics.log({"mpc_step_duration_s": step_duration})
 
@@ -235,7 +281,12 @@ class NeuralMPC:
             lambda_history.append(self.beliefs_k.full().flatten().tolist())
             entropy_history.append(entropy_value)
             all_trajectories.append(x_traj[:self.nx, :].full())
-            metrics.log_pose(current_state, entropy_value, belief=self.beliefs_k.full())
+            metrics.log_pose(
+                current_state,
+                entropy_value,
+                belief=self.beliefs_k.full(),
+                tree_positions=self.trees_pos,
+            )
 
             rospy.loginfo_throttle(5.0, "Entropy: %s", entropy_value)
             if all(value <= self.entropy_stop_threshold for value in entropy_k.full().flatten()):
@@ -254,6 +305,7 @@ class NeuralMPC:
             sum_yaw,
             sum_trans_speed,
             sim_start_time,
+            durations,
         )
         return all_trajectories, entropy_history, lambda_history, durations, self.l4c_nn, self.trees_pos, lb, ub
 
@@ -288,6 +340,7 @@ class NeuralMPC:
         sum_yaw,
         sum_trans_speed,
         sim_start_time,
+        durations,
     ):
         total_execution_time = time.time() - sim_start_time
         final_entropy = entropy_history[-1] if entropy_history else initial_entropy
@@ -302,6 +355,9 @@ class NeuralMPC:
                 "avg_vy": sum_vy / total_commands if total_commands else 0.0,
                 "avg_yaw_rate": sum_yaw / total_commands if total_commands else 0.0,
                 "avg_trans_speed": sum_trans_speed / total_commands if total_commands else 0.0,
+                "mean_controller_compute_time_ms": float(np.mean(durations) * 1000.0) if durations else np.nan,
+                "median_controller_compute_time_ms": float(np.median(durations) * 1000.0) if durations else np.nan,
+                "p95_controller_compute_time_ms": float(np.percentile(durations, 95) * 1000.0) if durations else np.nan,
             },
         )
         rospy.loginfo(
@@ -314,7 +370,10 @@ class NeuralMPC:
 
 def main():
     mpc = NeuralMPC()
-    mpc.run_simulation()
+    for run_index in range(mpc.run_index_offset, mpc.run_index_offset + mpc.num_runs):
+        if rospy.is_shutdown():
+            break
+        mpc.run_simulation(run_index=run_index)
 
 
 if __name__ == "__main__":

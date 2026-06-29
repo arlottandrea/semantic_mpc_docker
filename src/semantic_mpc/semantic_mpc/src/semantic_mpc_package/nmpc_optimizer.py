@@ -86,7 +86,7 @@ class NmpcOptimizer:
             opti.subject_to(opti.bounded(lb[0] - self.params["field_margin"], X[0, i], ub[0] + self.params["field_margin"]))
             opti.subject_to(opti.bounded(lb[1] - self.params["field_margin"], X[1, i], ub[1] + self.params["field_margin"]))
             opti.subject_to(opti.bounded(-self.params["max_heading_abs"], X[2, i], self.params["max_heading_abs"]))
-            opti.subject_to(opti.bounded(-self.params["max_velocity"], X[3:5, i], self.params["max_velocity"]))
+            opti.subject_to(ca.sumsqr(X[3:5, i]) <= self.params["max_velocity"] ** 2)
             opti.subject_to(opti.bounded(-self.params["max_yaw_velocity"], X[5, i], self.params["max_yaw_velocity"]))
             opti.subject_to(opti.bounded(-self.params["max_accel_xy"], U[0:2, i], self.params["max_accel_xy"]))
             opti.subject_to(opti.bounded(-self.params["max_accel_yaw"], U[2, i], self.params["max_accel_yaw"]))

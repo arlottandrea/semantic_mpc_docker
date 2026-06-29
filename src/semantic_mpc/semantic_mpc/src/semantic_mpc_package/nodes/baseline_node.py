@@ -12,13 +12,14 @@ from semantic_mpc_package.baselines import (
     generate_greedy_order,
     generate_linear_order,
     generate_mower_path,
+    resolve_mower_heading,
 )
 from semantic_mpc_package.experiment_metrics import WandbMetrics
 from semantic_mpc_package.ros_experiment import (
     BeliefState,
     RosExperimentContext,
-    corner_initial_pose,
     normalize_angle,
+    seeded_corner_initial_pose,
 )
 
 
@@ -41,6 +42,7 @@ class BaselineExperiment:
         self.dt = params["dt"]
         self.rate = rospy.Rate(max(1, int(round(params["hz"]))))
         self.metrics = WandbMetrics(mode, run_index, params)
+        self.controller_compute_times_ms = []
         self.step_generator = None
         if params["step_generator"] == "casadi_mpc":
             self.step_generator = CasadiMpcStepGenerator(params)
@@ -58,11 +60,11 @@ class BaselineExperiment:
         self.lambda_values = np.full(len(self.tree_positions), 0.5)
         initial_pose = self.resolve_initial_pose()
         if initial_pose is not None:
-            self.ros.publish_pose(initial_pose)
-            rospy.sleep(2.5)
+            self.apply_initial_pose(initial_pose)
 
         self.metrics.start()
         self.initial_entropy = BeliefState.binary_entropy(self.lambda_values)
+        self.metrics.entropy_metrics.update(0.0, self.lambda_values)
         self.measurement_timer = rospy.Timer(
             rospy.Duration(self.params["measurement_period"]),
             self.measurement_callback,
@@ -75,7 +77,50 @@ class BaselineExperiment:
         if not self.params["random_initial_state"]:
             return None
 
-        return corner_initial_pose(self.tree_positions)
+        heading_direction = None if self.params["mower_heading_random"] else self.params["mower_heading"]
+        initial_heading = resolve_mower_heading(heading_direction, seed=self.params["trial_seed"])
+        return seeded_corner_initial_pose(
+            self.tree_positions,
+            self.params["trial_seed"],
+            margin=self.params["initial_corner_margin"],
+            heading=initial_heading,
+        )
+
+    def apply_initial_pose(self, initial_pose):
+        """Publish and verify the requested simulation reset pose."""
+        initial_pose = np.asarray(initial_pose, dtype=float).flatten()[:3]
+        timeout = max(0.1, self.params["initial_pose_timeout"])
+        position_tolerance = self.params["initial_pose_tolerance"]
+        heading_tolerance = self.params["initial_heading_tolerance"]
+        publish_period = max(0.02, self.params["initial_pose_publish_period"])
+        deadline = time.time() + timeout
+
+        rospy.loginfo(
+            "Resetting robot to initial pose [%.3f, %.3f, %.3f].",
+            initial_pose[0],
+            initial_pose[1],
+            initial_pose[2],
+        )
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self.ros.publish_pose(initial_pose)
+            current_pose = self.ros.robot_pose(default=None, timeout=min(0.2, publish_period))
+            if current_pose is not None:
+                position_error = np.linalg.norm(current_pose[:2] - initial_pose[:2])
+                heading_error = abs(normalize_angle(current_pose[2] - initial_pose[2]))
+                if position_error <= position_tolerance and heading_error <= heading_tolerance:
+                    self.prev_cmd = np.zeros(3)
+                    rospy.loginfo(
+                        "Initial pose confirmed (position error %.3fm, heading error %.3frad).",
+                        position_error,
+                        heading_error,
+                    )
+                    return
+            rospy.sleep(publish_period)
+
+        raise RuntimeError(
+            "Robot did not reach the configured start_pose within {:.1f}s; "
+            "check the Unity /agent_0/cmd/pose subscriber and map -> drone_base_link TF.".format(timeout)
+        )
 
     def measurement_callback(self, _event):
         scores = self.ros.get_tree_scores(column=0)
@@ -184,14 +229,24 @@ class BaselineExperiment:
         while not rospy.is_shutdown():
             current_pose = self.ros.robot_pose(default=np.zeros(3))
             entropy = BeliefState.binary_entropy(self.lambda_values)
-            self.metrics.log_pose(current_pose, entropy)
+            self.metrics.log_pose(
+                current_pose,
+                entropy,
+                belief=self.lambda_values,
+                tree_positions=self.tree_positions,
+            )
 
-            if np.linalg.norm(current_pose[:2] - target) < tolerance:
+            distance_to_target = np.linalg.norm(current_pose[:2] - target)
+            if distance_to_target <= tolerance:
                 if stop_at_target:
-                    self.prev_cmd = np.zeros(3)
+                    self.hold_pose(current_pose)
                 return
 
+            compute_start = time.perf_counter()
             cmd = self.command_from_goal(current_pose, target, desired_heading, desired_velocity)
+            if stop_at_target:
+                cmd = self.apply_waypoint_braking(cmd, distance_to_target, tolerance)
+            self.controller_compute_times_ms.append((time.perf_counter() - compute_start) * 1000.0)
             next_pose = np.array(
                 [
                     current_pose[0] + cmd[0] * self.dt,
@@ -202,6 +257,37 @@ class BaselineExperiment:
             self.ros.publish_pose(next_pose)
             self.metrics.add_distance(np.linalg.norm(cmd[:2] * self.dt))
             self.rate.sleep()
+
+    def apply_waypoint_braking(self, cmd, distance_to_target, tolerance):
+        """Limit approach speed so a command cannot carry the robot past a stop waypoint."""
+        cmd = np.asarray(cmd, dtype=float).copy()
+        # Aim halfway inside the acceptance radius. Stopping exactly on its
+        # boundary can produce sub-millimetre setpoint updates that Unity
+        # ignores, leaving the loop just outside tolerance.
+        remaining = max(0.0, float(distance_to_target) - 0.5 * float(tolerance))
+        speed = np.linalg.norm(cmd[:2])
+        if speed <= 1e-9:
+            return cmd
+
+        acceleration = max(self.params["max_lin_accel"], 1e-6)
+        braking_speed = math.sqrt(2.0 * acceleration * remaining)
+        one_step_speed = remaining / max(self.dt, 1e-6)
+        allowed_speed = min(self.params["max_velocity"], braking_speed, one_step_speed)
+        if speed > allowed_speed:
+            cmd[:2] *= allowed_speed / speed
+            self.prev_cmd = cmd.copy()
+        return cmd
+
+    def hold_pose(self, current_pose):
+        """Cancel residual motion and keep publishing the measured pose while Unity settles."""
+        self.prev_cmd = np.zeros(3)
+        hold_target = np.asarray(current_pose, dtype=float).copy()
+        settle_time = max(0.0, self.params["waypoint_settle_time"])
+        publish_period = max(0.02, self.params["waypoint_hold_publish_period"])
+        deadline = time.time() + settle_time
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self.ros.publish_pose(hold_target)
+            rospy.sleep(publish_period)
 
     def observe_tree(self):
         if self.active_tree_idx is None:
@@ -224,9 +310,16 @@ class BaselineExperiment:
             desired_heading = normalize_angle(phi + math.pi)
             current_pose = self.ros.robot_pose(default=np.zeros(3))
             entropy = BeliefState.binary_entropy(self.lambda_values)
-            self.metrics.log_pose(current_pose, entropy)
+            self.metrics.log_pose(
+                current_pose,
+                entropy,
+                belief=self.lambda_values,
+                tree_positions=self.tree_positions,
+            )
 
+            compute_start = time.perf_counter()
             cmd = self.command_from_goal(current_pose, desired, desired_heading)
+            self.controller_compute_times_ms.append((time.perf_counter() - compute_start) * 1000.0)
             next_pose = np.array(
                 [
                     current_pose[0] + cmd[0] * self.dt,
@@ -248,7 +341,7 @@ class BaselineExperiment:
             current_pose,
             offset=self.params["mower_offset"],
             spacing=self.params["mower_spacing"],
-            heading_direction=self.params["mower_heading"],
+            heading_direction=None if self.params["mower_heading_random"] else self.params["mower_heading"],
             axis=self.params["mower_axis"] or None,
             seed=self.params["seed"] + self.run_index,
         )
@@ -315,7 +408,18 @@ class BaselineExperiment:
             raise ValueError("Unsupported baseline mode: {}".format(self.mode))
 
         final_entropy = BeliefState.binary_entropy(self.lambda_values)
-        summary = self.metrics.finish(self.initial_entropy, final_entropy, self.lambda_values)
+        compute_times = np.asarray(self.controller_compute_times_ms, dtype=float)
+        compute_summary = {
+            "mean_controller_compute_time_ms": float(np.mean(compute_times)) if compute_times.size else np.nan,
+            "median_controller_compute_time_ms": float(np.median(compute_times)) if compute_times.size else np.nan,
+            "p95_controller_compute_time_ms": float(np.percentile(compute_times, 95)) if compute_times.size else np.nan,
+        }
+        summary = self.metrics.finish(
+            self.initial_entropy,
+            final_entropy,
+            self.lambda_values,
+            extra=compute_summary,
+        )
         rospy.loginfo(
             "%s run %d complete: time=%.2fs distance=%.2fm entropy_reduction=%.4f",
             self.mode,
@@ -338,9 +442,14 @@ def _param(name, default):
 
 
 def load_params():
-    hz = float(_param("hz", 10.0))
+    hz_value = _param("hz", None)
     dt = _param("dt", None)
-    dt = (1.0 / hz) if dt is None else float(dt)
+    if dt is not None:
+        dt = float(dt)
+        hz = float(hz_value) if hz_value is not None else 1.0 / max(dt, 1e-6)
+    else:
+        hz = float(hz_value) if hz_value is not None else 10.0
+        dt = 1.0 / max(hz, 1e-6)
     if hz <= 0.0:
         hz = 1.0 / max(dt, 1e-6)
 
@@ -348,10 +457,16 @@ def load_params():
         "modes": _param("modes", ["casadi_mpc"]),
         "step_generator": _param("step_generator", "casadi_mpc"),
         "num_runs": int(_param("num_runs", 1)),
+        "run_index_offset": int(_param("run_index_offset", 0)),
         "run_root": _param("run_root", "/runs/baseline_runs"),
         "seed": int(_param("seed", 1)),
         "random_initial_state": bool(_param("random_initial_state", True)),
         "start_pose": _param("start_pose", None),
+        "initial_corner_margin": float(_param("initial_corner_margin", 1.5)),
+        "initial_pose_timeout": float(_param("initial_pose_timeout", 15.0)),
+        "initial_pose_tolerance": float(_param("initial_pose_tolerance", 0.15)),
+        "initial_heading_tolerance": float(_param("initial_heading_tolerance", 0.2)),
+        "initial_pose_publish_period": float(_param("initial_pose_publish_period", 0.1)),
         "map_frame": _param("map_frame", "map"),
         "base_frame": _param("base_frame", "drone_base_link"),
         "tree_scores_topic": _param("tree_scores_topic", "tree_scores"),
@@ -362,6 +477,8 @@ def load_params():
         "hz": hz,
         "dt": dt,
         "tolerance": float(_param("tolerance", 0.2)),
+        "waypoint_settle_time": float(_param("waypoint_settle_time", 0.4)),
+        "waypoint_hold_publish_period": float(_param("waypoint_hold_publish_period", 0.05)),
         "tree_observation_tolerance": float(_param("tree_observation_tolerance", 2.0)),
         "min_velocity": float(_param("min_velocity", 0.0)),
         "max_velocity": float(_param("max_velocity", 1.5)),
@@ -381,6 +498,7 @@ def load_params():
         "mower_offset": float(_param("mower_offset", 2.0)),
         "mower_spacing": float(_param("mower_spacing", 4.0)),
         "mower_heading": _param("mower_heading", "N"),
+        "mower_heading_random": bool(_param("mower_heading_random", False)),
         "mower_axis": _param("mower_axis", ""),
         "linear_same_row_tol": float(_param("linear_same_row_tol", 0.01)),
         "mpc_steps": int(_param("mpc_steps", 8)),
@@ -413,11 +531,20 @@ def main():
     params = load_params()
     os.makedirs(params["run_root"], exist_ok=True)
 
-    for run_index in range(params["num_runs"]):
+    first_run_index = params["run_index_offset"]
+    for run_index in range(first_run_index, first_run_index + params["num_runs"]):
         for mode in params["modes"]:
             if rospy.is_shutdown():
                 return
             run_params = dict(params)
+            run_params["trial_seed"] = params["seed"] + run_index
+            run_params["algorithm"] = mode
+            run_params["run_index"] = run_index
+            run_params["termination_criterion"] = (
+                "path_complete"
+                if mode == "mower"
+                else "per_tree_entropy_or_observation_timeout"
+            )
             run_params["run_dir"] = os.path.join(
                 params["run_root"],
                 "{}_run_{:03d}".format(mode, run_index),
