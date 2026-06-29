@@ -1,0 +1,16 @@
+x-gpu-runtime: &gpu-runtime
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  baseline:
+    <<: *gpu-runtime
+  rl:
+    <<: *gpu-runtime
+  nmpc:
+    <<: *gpu-runtime

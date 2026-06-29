@@ -1,0 +1,31 @@
+from semantic_mpc_package.nmpc_decay import NeuralMPC
+import os
+import re
+
+
+def main():
+    N_tests = 1
+    package_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    for test_num in range(0, N_tests):
+        base_test_folder = os.path.join(package_root, "artifacts", "batch_tests", "decay_test_9trees")
+        os.makedirs(base_test_folder, exist_ok=True)
+
+        # Find the next test number
+        existing_runs = [
+            int(match.group(1)) for d in os.listdir(base_test_folder)
+            if (match := re.match(r'run_(\d+)', d)) and os.path.isdir(os.path.join(base_test_folder, d))
+        ]
+        next_test_num = max(existing_runs, default=0) + 1
+
+        # Create run folder
+        run_folder = os.path.join(base_test_folder, f"run_{next_test_num}")
+        os.makedirs(run_folder, exist_ok=True)
+        print(f"================== Starting Test Run {next_test_num} ==================")
+
+        mpc = NeuralMPC(run_dir=run_folder, initial_randomic=True)
+        # Run the simulation with the specified initial state and output folder.
+        mpc.run_simulation()
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,4 @@
+Firm_Apple
+Raw_Apple
+Ripe_Apple
+Rosy_Apple

@@ -1,0 +1,39 @@
+detections_topic: "/yolov7/detect"
+depth_image_topic: "camera/depth/image/compressed"
+camera_info_topic: "camera/depth/camera_info"
+tree_scores_topic: "tree_scores"
+scores_markers_topic: "scores_markers"
+fruits_markers_topic: "fruits_markers"
+tree_service: "/obj_pose_srv"
+
+map_frame: "map"
+base_frame: "drone_base_link"
+depth_camera_frame: "depth_camera_frame"
+
+sync_queue_size: 1
+sync_slop: 0.2
+scores_queue_size: 1
+markers_queue_size: 1
+
+publish_visualization: false
+publish_score_markers: false
+publish_fruit_markers: false
+publish_path: false
+
+association_distance: 2.5
+observation_distance: 8.0
+default_tree_score: 0.5
+score_midpoint: 5.0
+score_steepness: 10.0
+
+ripe_class_id: 2
+ripe_class_label: "ripe"
+raw_class_label: "raw"
+
+depth_min_distance: 0.05
+depth_max_distance: 20.0
+depth_valid_threshold: 11
+
+fruit_marker_lifetime: 0.2
+fruit_marker_scale: 0.1
+score_marker_lifetime: 0.2

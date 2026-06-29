@@ -1,0 +1,11 @@
+<launch>
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch"/>
+  <include file="$(find yolov7_ros)/launch/yolov7.launch"/>
+  
+  <arg name="node_start_delay" default="10" />  <node name="data_association_node" pkg="semantic_mpc" type="data_association_node.py" output="screen" 
+        launch-prefix="cmd /c timeout $(arg node_start_delay) &amp;&amp;" ns="agent_0"/>
+        
+  <node name="rl_node" pkg="active_rl_classification" type="rl_agent_ros_node.py" output="screen" ns="agent_0"/>
+
+</launch>

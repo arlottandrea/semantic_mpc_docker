@@ -1,0 +1,57 @@
+<launch>
+  <arg name="controller"/>
+  <arg name="tcp_ip" default="0.0.0.0"/>
+  <arg name="tcp_port" default="10000"/>
+  <arg name="yolo_device" default="cuda"/>
+  <arg name="nmpc_device" default="cuda"/>
+  <arg name="rl_policy_path" default="/models/rl/final_model.zip"/>
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch">
+    <arg name="tcp_ip" value="$(arg tcp_ip)"/>
+    <arg name="tcp_port" value="$(arg tcp_port)"/>
+  </include>
+
+  <node name="republish" pkg="image_transport" type="republish" output="screen"
+        args="compressed in:=/agent_0/camera/color/image raw out:=/agent_0/rgb" required="true"/>
+
+  <node name="detect" pkg="yolov7_ros" type="detect_ros.py" output="screen" ns="yolov7" required="true">
+    <param name="weights_path" value="/models/yolo/apples.pt"/>
+    <param name="classes_path" value="$(find yolov7_ros)/class_labels/apples.txt"/>
+    <param name="img_topic" value="/agent_0/rgb"/>
+    <param name="out_topic" value="detect"/>
+    <param name="conf_thresh" value="0.5"/>
+    <param name="iou_thresh" value="0.40"/>
+    <param name="queue_size" value="1"/>
+    <param name="img_size" value="640"/>
+    <param name="visualize" value="false"/>
+    <param name="device" value="$(arg yolo_device)"/>
+  </node>
+
+  <node name="data_association_node" pkg="semantic_mpc" type="data_association_node.py"
+        output="screen" ns="agent_0" required="true">
+    <rosparam command="load" file="$(find semantic_mpc)/config/data_association.yaml"/>
+  </node>
+
+  <group if="$(eval arg('controller') == 'baseline')">
+    <node name="baseline_node" pkg="semantic_mpc" type="baseline_node.py"
+          output="screen" ns="agent_0" required="true">
+      <rosparam command="load" file="$(find semantic_mpc)/config/baseline.yaml"/>
+    </node>
+  </group>
+
+  <group if="$(eval arg('controller') == 'rl')">
+    <node name="rl_node" pkg="active_rl_classification" type="rl_agent_ros_node.py"
+          output="screen" ns="agent_0" required="true">
+      <param name="model_path" value="$(arg rl_policy_path)"/>
+      <param name="device" value="auto"/>
+    </node>
+  </group>
+
+  <group if="$(eval arg('controller') == 'nmpc')">
+    <node name="main_node" pkg="semantic_mpc" type="nmpc_node.py"
+          output="screen" ns="agent_0" required="true">
+      <rosparam command="load" file="$(find semantic_mpc)/config/nmpc.yaml"/>
+      <param name="model_device" value="$(arg nmpc_device)"/>
+    </node>
+  </group>
+</launch>

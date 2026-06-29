@@ -1,0 +1,67 @@
+initial_randomic: true
+run_dir: "nmpc_runs"
+
+hidden_size: 64
+hidden_layers: 3
+nn_input_dim: 3
+nn_output_dim: 2
+nn_threshold: 8.0
+nn_gate_slope: 10.0
+model_device: "cuda"
+model_labels: ["ripe", "raw"]
+
+mpc_horizon: 5
+dt: 0.2
+state_dim: 3
+control_dim: 3
+optimizer_state_dim: 6
+num_target_trees: 10
+num_obstacle_trees: 2
+sim_steps: 1200
+belief_update_period: 2
+entropy_stop_threshold: 0.025
+entropy_selection_threshold: 0.025
+initial_pose_margin: 1.5
+initial_pose_sleep: 1.5
+wait_sleep: 0.05
+loop_extra_sleep: 0.1
+
+field_margin: 3.0
+max_heading_abs: 9.42477796077
+max_velocity: 1.75
+max_yaw_velocity: 0.78539816339
+max_accel_xy: 5.0
+max_accel_yaw: 3.14159265359
+safe_distance: 1.0
+q_dist: 0.001
+r_xy: 0.01
+r_theta: 0.01
+entropy_weight: 40.0
+entropy_objective_scale: 10.0
+attraction_threshold_sq_dist: 9.0
+attraction_sigmoid_steepness: 10.0
+ipopt:
+  tol: 1.0e-6
+  warm_start_init_point: "yes"
+  print_level: 0
+  sb: "no"
+  warm_start_bound_push: 1.0e-8
+  warm_start_mult_bound_push: 1.0e-8
+  mu_init: 1.0e-5
+  bound_relax_factor: 1.0e-9
+  hessian_approximation: "limited-memory"
+  mu_strategy: "monotone"
+  max_iter: 1000
+
+map_frame: "map"
+base_frame: "drone_base_link"
+tree_scores_topic: "tree_scores"
+cmd_pose_topic: "cmd/pose"
+predicted_path_topic: "predicted_path"
+tree_markers_topic: "tree_markers"
+tree_service: "/obj_pose_srv"
+
+wandb_project: "semantic_mpc"
+wandb_entity: ""
+wandb_mode: "offline"
+wandb_log_period: 1.0

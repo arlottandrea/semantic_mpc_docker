@@ -1,0 +1,22 @@
+# Local environments and build products
+.pixi/
+.ros_home/
+.uv-cache/
+build/
+devel/
+runs/
+.env
+
+# Local tooling state
+.agents/
+.vscode/
+*.log
+*.out
+*.err
+
+# Nested repository metadata is intentionally not part of the Linux monorepo.
+**/.git/
+
+# The runtime copy is stored once through Git LFS under models/.
+/src/yolov7-ros/weights/*.pt
+/l4casadi/

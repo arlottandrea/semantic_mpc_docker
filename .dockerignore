@@ -1,0 +1,17 @@
+.git
+.agents
+.pixi
+.ros_home
+.uv-cache
+build
+devel
+runs
+src/**/.git
+src/**/.venv
+src/**/__pycache__
+src/**/artifacts
+src/semantic_mpc/notebooks
+src/semantic_mpc/semantic_mpc/artifacts
+src/yolov7-ros/runs
+models
+*.log

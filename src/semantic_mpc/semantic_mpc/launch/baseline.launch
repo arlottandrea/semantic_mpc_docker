@@ -1,0 +1,18 @@
+<launch>
+  <arg name="tcp_port" default="10000"/>
+  <arg name="node_start_delay" default="10.0"/>
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch">
+    <arg name="tcp_port" value="$(arg tcp_port)"/>
+  </include>
+
+  <include file="$(find yolov7_ros)/launch/yolov7.launch"/>
+
+  <node name="data_association_node" pkg="semantic_mpc" type="data_association_node.py" output="screen"
+        launch-prefix="python $(find semantic_mpc)/scripts/delayed_launch.py $(arg node_start_delay)" ns="agent_0">
+    <rosparam command="load" file="$(find semantic_mpc)/config/data_association.yaml"/>
+  </node>
+  <node name="baseline_node" pkg="semantic_mpc" type="baseline_node.py" output="screen" ns="agent_0">
+    <rosparam command="load" file="$(find semantic_mpc)/config/baseline.yaml"/>
+  </node>
+</launch>

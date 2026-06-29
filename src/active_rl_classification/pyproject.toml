@@ -1,0 +1,22 @@
+[project]
+name = "active_rl_classification"
+version = "0.1.0"
+description = "RL baseline for active inspection: a single drone navigates a 2D arena to classify trees as ripe or not-ripe."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "gymnasium>=1.1.1",
+    "scipy>=1.13.1",
+    "stable-baselines3>=2.7.1",
+    "torch>=2.8.0",
+    "wandb>=0.25.1",
+    "tensorboard",
+    "matplotlib",
+    "tqdm>=4.67.3",
+]
+
+[project.entry-points."gymnasium.envs"]
+"TreeClassificationEnv-v0" = "active_rl_classification:TreeClassificationEnv"
+
+[tool.setuptools.packages.find]
+where = ["src"]

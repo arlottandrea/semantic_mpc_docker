@@ -1,0 +1,14 @@
+<launch>
+
+  <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch"/>
+  <include file="$(find yolov7_ros)/launch/yolov7.launch"/>
+  
+  <arg name="node_start_delay" default="10.0" />  
+
+  <node name="data_association_node" pkg="semantic_mpc" type="data_association_node.py" output="screen" launch-prefix="python $(find semantic_mpc)/scripts/delayed_launch.py $(arg node_start_delay)"  ns="agent_0">
+    <rosparam command="load" file="$(find semantic_mpc)/config/data_association.yaml"/>
+  </node>
+  <node name="main_node" pkg="semantic_mpc" type="nmpc_node.py" output="screen" ns="agent_0">
+    <rosparam command="load" file="$(find semantic_mpc)/config/nmpc.yaml"/>
+  </node>
+</launch>

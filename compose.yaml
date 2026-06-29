@@ -1,0 +1,48 @@
+name: semantic-mpc
+
+x-runtime: &runtime
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  init: true
+  restart: "no"
+  ipc: private
+  shm_size: 1gb
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  ports:
+    - "127.0.0.1:${UNITY_TCP_PORT:-10000}:10000"
+  environment:
+    ROS_HOME: /runs/ros
+    ROS_LOG_DIR: /runs/ros/log
+    YOLO_DEVICE: ${YOLO_DEVICE:-cuda}
+    NMPC_DEVICE: ${NMPC_DEVICE:-cuda}
+    RL_POLICY_PATH: /models/rl/final_model.zip
+  volumes:
+    - ./models:/models:ro
+    - ./runs:/runs
+  healthcheck:
+    test: ["CMD-SHELL", "rosnode list 2>/dev/null | grep -q /unity_endpoint"]
+    interval: 10s
+    timeout: 3s
+    retries: 12
+    start_period: 30s
+  stop_grace_period: 10s
+
+services:
+  baseline:
+    <<: *runtime
+    profiles: [baseline]
+    command: ["baseline"]
+
+  rl:
+    <<: *runtime
+    profiles: [rl]
+    command: ["rl"]
+
+  nmpc:
+    <<: *runtime
+    profiles: [nmpc]
+    command: ["nmpc"]

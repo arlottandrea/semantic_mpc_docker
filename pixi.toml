@@ -1,0 +1,49 @@
+[workspace]
+authors = ["Andrea Arlotta <andrea.arlotta@mil.be>"]
+channels = ["conda-forge", "robostack", "pytorch", "nvidia"]
+name = "ros1"
+platforms = ["win-64"]
+version = "0.1.0"
+
+[pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu128"]
+
+[system-requirements]
+cuda = "12.8"
+
+[pypi-dependencies]
+torch = "*"
+torchvision = "*"
+torchaudio = "*"
+stable-baselines3 = ">=2.7.1, <3"
+
+[tasks]
+build = "catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+# This task configures the MSVC vars, sets CUDACXX, and runs pip install
+build-l4casadi = { cmd = "pip install l4casadi --no-build-isolation", env = { CUDACXX = "$PIXI_PROJECT_ROOT/.pixi/envs/default/Library/bin/nvcc.exe" } }
+[dependencies]
+ros-noetic-desktop = ">=1.5.0,<2"
+compilers = ">=1.8.0,<2"
+ninja = ">=1.13.2,<2"
+lz4 = ">=4.4.4,<5"
+pip = ">=25.2,<26"
+libdeflate = "1.14.*"
+setuptools = ">=80.9.0,<81"
+scikit-build = ">=0.19.0,<0.20"
+cmake = ">=3.27.4,<4"
+casadi = ">=3.6.3,<4"
+vs2022_win-64 = ">=17"
+cuda-nvcc = ">=12.8.93,<13"
+cuda-runtime = ">=12.8.2,<13"
+cuda-version = "12.8.*"
+uv = ">=0.11.23,<0.12"
+tqdm = ">=4.67.1,<5"
+ffmpeg = ">=6.1.0,<7"
+ros-noetic-compressed-image-transport = ">=1.14.0,<2"
+ros-noetic-sensor-msgs = ">=1.13.1,<2"
+ros-noetic-tf2 = ">=0.7.5,<0.8"
+ros-noetic-tf = ">=1.13.2,<2"
+ros-noetic-rosgraph-msgs = ">=1.11.3,<2"
+ros-noetic-cv-bridge = ">=1.16.0,<2"
+ros-noetic-message-generation = ">=0.4.1,<0.5"
+ros-noetic-image-geometry = ">=1.16.0,<2"

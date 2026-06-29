@@ -1,0 +1,15 @@
+# Usage: docker compose -f compose.yaml -f compose.cpu.yaml --profile baseline up baseline
+x-cpu-runtime: &cpu-runtime
+  environment:
+    ROS_HOME: /runs/ros
+    ROS_LOG_DIR: /runs/ros/log
+    YOLO_DEVICE: cpu
+    NMPC_DEVICE: cpu
+    RL_POLICY_PATH: /models/rl/final_model.zip
+services:
+  baseline:
+    <<: *cpu-runtime
+  rl:
+    <<: *cpu-runtime
+  nmpc:
+    <<: *cpu-runtime

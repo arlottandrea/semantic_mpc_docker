@@ -1,0 +1,22 @@
+# Core scientific stack
+numpy
+scipy
+pandas
+
+# Plotting and notebook outputs
+matplotlib
+plotly
+seaborn
+pillow
+imageio
+cairosvg
+
+# YOLO/data-generation helpers
+opencv-python
+pyyaml
+requests
+tqdm
+thop
+
+# Required by torch.utils.tensorboard.SummaryWriter in notebooks/training code.
+tensorboard

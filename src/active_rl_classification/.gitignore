@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+active_rl_classification.egg-info/
+*.egg-info/
+
+wandb/
+runs/
+checkpoints/
+models/
+
+artifacts/gym/wandb/
+artifacts/gym/tensorboard/
+artifacts/gym/checkpoints/
+artifacts/ros/wandb/
+artifacts/**/*.mp4

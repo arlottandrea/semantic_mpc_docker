@@ -1,0 +1,15 @@
+<launch>
+
+    <include file="$(find yolov7_ros)/launch/yolov7_multi_single_agent.launch">
+        <arg name="agent_id" value="1" />
+    </include>
+
+    <include file="$(find yolov7_ros)/launch/yolov7_multi_single_agent.launch">
+        <arg name="agent_id" value="2" />
+    </include>
+
+    <include file="$(find yolov7_ros)/launch/yolov7_multi_single_agent.launch">
+        <arg name="agent_id" value="3" />
+    </include>
+
+</launch>
