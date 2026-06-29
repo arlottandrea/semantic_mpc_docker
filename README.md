@@ -104,7 +104,7 @@ The image uses Ubuntu 20.04, ROS Noetic, CUDA 11.8, Python 3.8, PyTorch 2.4.1, a
 
 The RL policy was produced by the newer Windows environment. Its complete SB3 archive metadata cannot be loaded with NumPy 1.x, but the runtime node deliberately loads only `policy.pth`. That path was smoke-tested successfully with SB3 2.4.1. A full Linux container build should still be included in release CI once Docker is available.
 
-Container logs and experiment outputs are written under `runs/`. The model directory is read-only inside the container. The container runs as UID/GID 1000, drops Linux capabilities, and uses `no-new-privileges`.
+Container logs and experiment outputs are written under `runs/`. The model directory is read-only inside the container. The run script maps the invoking host user's UID/GID into the container; the container also drops Linux capabilities and uses `no-new-privileges`.
 
 ## Publishing this repository
 

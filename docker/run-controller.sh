@@ -29,10 +29,6 @@ if [[ "${controller}" == "nmpc" ]]; then
     exit 66
   fi
 
-  package_models=/workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models
-  mkdir -p "${package_models}"
-  ln -sfn /models/nmpc/ripe "${package_models}/ripe"
-  ln -sfn /models/nmpc/raw "${package_models}/raw"
 fi
 
 exec roslaunch /workspace/docker/launch/runtime.launch \

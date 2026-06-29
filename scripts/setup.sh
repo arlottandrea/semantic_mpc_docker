@@ -26,7 +26,7 @@ fi
 
 git lfs install --local
 git lfs pull
-mkdir -p runs/ros/log models/yolo models/rl models/nmpc/ripe models/nmpc/raw
+mkdir -p runs/home runs/ros/log models/yolo models/rl models/nmpc/ripe models/nmpc/raw
 
 if [[ -f src/yolov7-ros/weights/apples.pt && ! -s models/yolo/apples.pt ]]; then
   cp src/yolov7-ros/weights/apples.pt models/yolo/apples.pt
