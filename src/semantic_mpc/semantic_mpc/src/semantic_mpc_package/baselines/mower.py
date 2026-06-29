@@ -1,6 +1,26 @@
 import numpy as np
 
 
+def resolve_mower_heading(heading_direction="N", seed=None):
+    """Resolve a fixed or seeded-random cardinal mower heading in radians."""
+    direction_map = {
+        "N": np.pi / 2.0,
+        "E": 0.0,
+        "S": -np.pi / 2.0,
+        "W": np.pi,
+        "O": np.pi,
+    }
+    if heading_direction is None:
+        rng = np.random.default_rng(seed)
+        heading_direction = rng.choice(("N", "E", "S", "W"))
+    if isinstance(heading_direction, str):
+        key = heading_direction.upper()
+        if key not in direction_map:
+            raise ValueError("Unsupported mower heading: {}".format(heading_direction))
+        return float(direction_map[key])
+    return float(heading_direction)
+
+
 def _inclusive_coords(lo, hi, step):
     n = max(1, int(np.floor((hi - lo) / step + 1e-9)))
     values = lo + step * np.arange(n + 1)
@@ -24,13 +44,7 @@ def generate_mower_path(
         return []
 
     rng = np.random.default_rng(seed)
-    direction_map = {"N": np.pi / 2.0, "E": 0.0, "S": -np.pi / 2.0, "W": np.pi, "O": np.pi}
-    if heading_direction is None:
-        heading = direction_map[rng.choice(list(direction_map.keys()))]
-    elif isinstance(heading_direction, str):
-        heading = direction_map.get(heading_direction.upper(), 0.0)
-    else:
-        heading = float(heading_direction)
+    heading = resolve_mower_heading(heading_direction, seed=seed)
 
     x_min = float(np.min(tree_positions[:, 0]) - offset)
     x_max = float(np.max(tree_positions[:, 0]) + offset)

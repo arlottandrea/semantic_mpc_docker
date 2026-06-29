@@ -1,14 +1,6 @@
 modes: ["mower"]
 step_generator: "casadi_mpc"
-num_runs: 1
 run_root: "/runs/baseline_runs"
-seed: 1
-random_initial_state: true
-start_pose: [13.387725830078125, -14.329375267028809, -0.4453626946182328]
-initial_pose_timeout: 15.0
-initial_pose_tolerance: 0.15
-initial_heading_tolerance: 0.2
-initial_pose_publish_period: 0.1
 
 map_frame: "map"
 base_frame: "drone_base_link"
@@ -18,19 +10,13 @@ cmd_pose_queue_size: 1
 tree_scores_queue_size: 1
 tree_service: "/obj_pose_srv"
 
-hz: 4.0
 tolerance: 0.2
 waypoint_settle_time: 0.4
 waypoint_hold_publish_period: 0.05
 tree_observation_tolerance: 2.0
 min_velocity: 0.2
-max_velocity: 2.5
-max_yaw_velocity: 0.78539816339
-max_lin_accel: 1.0
-max_yaw_accel: 1.57079632679
 cmd_smoothing_alpha: 0.2
 
-obstacle_avoidance_distance: 1.5
 obstacle_goal_ignore_distance: 2.0
 obstacle_cone_angle: 1.0471975512
 obstacle_tangent_gain: 3.25
@@ -49,15 +35,10 @@ mpc_ipopt_max_iter: 5
 
 observation_entropy_threshold: 0.025
 max_observe_time: 30.0
-measurement_period: 0.25
-
 mower_offset: 2.0
 mower_spacing: 4.0
-mower_heading: "N"
 mower_axis: ""
 linear_same_row_tol: 0.1
 
 wandb_project: "semantic_mpc_baselines"
 wandb_entity: ""
-wandb_mode: "offline"
-wandb_log_period: 1.0

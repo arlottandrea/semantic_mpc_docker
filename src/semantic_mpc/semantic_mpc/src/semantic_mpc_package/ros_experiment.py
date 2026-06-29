@@ -8,6 +8,12 @@ from geometry_msgs.msg import Point, Pose, Quaternion
 from std_msgs.msg import Float32MultiArray
 
 from semantic_mpc.srv import GetTreesPoses
+from semantic_mpc_package.experiment_sampling import (
+    corner_initial_pose,
+    get_domain,
+    random_initial_pose,
+    seeded_corner_initial_pose,
+)
 
 
 class RosExperimentContext:
@@ -161,28 +167,3 @@ class BeliefState:
 
 def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
-
-
-def get_domain(tree_positions):
-    return [
-        float(np.min(tree_positions[:, 0])),
-        float(np.min(tree_positions[:, 1])),
-    ], [
-        float(np.max(tree_positions[:, 0])),
-        float(np.max(tree_positions[:, 1])),
-    ]
-
-
-def corner_initial_pose(tree_positions):
-    lb, ub = get_domain(tree_positions)
-    return np.array([ub[0] + 1.5, lb[1] - 1.5, np.pi / 2.0], dtype=float)
-
-
-def random_initial_pose(tree_positions, lb, ub, margin=1.5, rng=None):
-    rng = rng or np.random.default_rng()
-    while True:
-        x = rng.uniform(lb[0], ub[0])
-        y = rng.uniform(lb[1], ub[1])
-        if np.all(np.linalg.norm(tree_positions - np.array([x, y]), axis=1) >= margin):
-            theta = rng.uniform(-np.pi, np.pi)
-            return np.array([x, y, theta], dtype=float)

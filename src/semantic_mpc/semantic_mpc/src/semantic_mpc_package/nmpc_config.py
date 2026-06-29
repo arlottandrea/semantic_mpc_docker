@@ -81,6 +81,20 @@ def default_nmpc_params():
         "wandb_entity": "",
         "wandb_mode": "offline",
         "wandb_log_period": 1.0,
+        "num_runs": 1,
+        "run_index_offset": 0,
+        "seed": 1,
+        "random_initial_state": True,
+        "start_pose": None,
+        "initial_corner_margin": 2.0,
+        "mower_heading": "N",
+        "mower_heading_random": False,
+        "initial_pose_timeout": 15.0,
+        "initial_pose_tolerance": 0.15,
+        "initial_heading_tolerance": 0.2,
+        "initial_pose_publish_period": 0.1,
+        "measurement_period": 0.25,
+        "tree_velocity_radius": 5.0,
     }
 
 
@@ -141,6 +155,20 @@ def load_semantic_mpc_params():
         "wandb_entity",
         "wandb_mode",
         "wandb_log_period",
+        "num_runs",
+        "run_index_offset",
+        "seed",
+        "random_initial_state",
+        "start_pose",
+        "initial_corner_margin",
+        "mower_heading",
+        "mower_heading_random",
+        "initial_pose_timeout",
+        "initial_pose_tolerance",
+        "initial_heading_tolerance",
+        "initial_pose_publish_period",
+        "measurement_period",
+        "tree_velocity_radius",
     ]
     loaded = {}
     for name in names:
@@ -163,10 +191,15 @@ def load_semantic_mpc_params():
         "cmd_pose_queue_size",
         "tree_scores_queue_size",
         "visualization_publish_period",
+        "num_runs",
+        "run_index_offset",
+        "seed",
     }
     bool_names = {
         "publish_predicted_path",
         "publish_tree_markers",
+        "random_initial_state",
+        "mower_heading_random",
     }
     float_names = {
         "nn_threshold",
@@ -193,6 +226,13 @@ def load_semantic_mpc_params():
         "attraction_threshold_sq_dist",
         "attraction_sigmoid_steepness",
         "wandb_log_period",
+        "initial_corner_margin",
+        "initial_pose_timeout",
+        "initial_pose_tolerance",
+        "initial_heading_tolerance",
+        "initial_pose_publish_period",
+        "measurement_period",
+        "tree_velocity_radius",
     }
     for name in int_names.intersection(loaded):
         loaded[name] = int(loaded[name])
