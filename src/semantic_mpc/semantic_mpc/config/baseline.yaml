@@ -1,7 +1,7 @@
 modes: ["mower"]
 step_generator: "casadi_mpc"
 num_runs: 1
-run_root: "baseline_runs"
+run_root: "/runs/baseline_runs"
 seed: 1
 random_initial_state: true
 start_pose: [13.387725830078125, -14.329375267028809, -0.4453626946182328]

@@ -6,6 +6,7 @@ x-runtime: &runtime
     dockerfile: docker/Dockerfile
   init: true
   restart: "no"
+  user: "${RUNTIME_UID:-1000}:${RUNTIME_GID:-1000}"
   ipc: private
   shm_size: 1gb
   security_opt:
@@ -15,6 +16,7 @@ x-runtime: &runtime
   ports:
     - "127.0.0.1:${UNITY_TCP_PORT:-10000}:10000"
   environment:
+    HOME: /runs/home
     ROS_HOME: /runs/ros
     ROS_LOG_DIR: /runs/ros/log
     YOLO_DEVICE: ${YOLO_DEVICE:-cuda}

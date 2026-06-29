@@ -27,6 +27,11 @@ docker info >/dev/null 2>&1 || { echo "ERROR Docker daemon is unavailable" >&2; 
 check_file models/yolo/apples.pt
 [[ "${controller}" != rl ]] || check_file models/rl/final_model.zip
 
+if [[ ! -d runs/ros/log || ! -w runs/ros/log ]]; then
+  echo "ERROR runs/ros/log is not writable by UID $(id -u); repair ownership of runs/." >&2
+  errors=$((errors + 1))
+fi
+
 if [[ "${controller}" == nmpc ]]; then
   compgen -G 'models/nmpc/ripe/best_model_epoch_*.pth' >/dev/null || { echo "ERROR ripe NMPC checkpoint is missing" >&2; errors=$((errors + 1)); }
   compgen -G 'models/nmpc/raw/best_model_epoch_*.pth' >/dev/null || { echo "ERROR raw NMPC checkpoint is missing" >&2; errors=$((errors + 1)); }

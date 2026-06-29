@@ -378,7 +378,7 @@ def load_params():
         "modes": _param("modes", ["casadi_mpc"]),
         "step_generator": _param("step_generator", "casadi_mpc"),
         "num_runs": int(_param("num_runs", 1)),
-        "run_root": _param("run_root", "baseline_runs"),
+        "run_root": _param("run_root", "/runs/baseline_runs"),
         "seed": int(_param("seed", 1)),
         "random_initial_state": bool(_param("random_initial_state", True)),
         "start_pose": _param("start_pose", None),

@@ -44,6 +44,11 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation \
 COPY src /workspace/src
 COPY docker /workspace/docker
 
+# These links may point at absent build-time paths; Compose mounts the runtime
+# model directories at /models when the container starts.
+RUN ln -sfn /models/nmpc/ripe /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/ripe \
+ && ln -sfn /models/nmpc/raw /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/raw
+
 RUN bash -lc 'source /opt/ros/noetic/setup.bash && cd /workspace && catkin_make -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 
 RUN groupadd --gid 1000 app \
