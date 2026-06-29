@@ -22,7 +22,7 @@ Only port 10000 is exposed, and it is bound to host loopback. ROS port 11311 rem
 - Linux x86-64
 - Git and Git LFS
 - Docker Engine with Compose v2
-- For GPU mode: an NVIDIA driver supporting CUDA 12.4 and NVIDIA Container Toolkit
+- For GPU mode: NVIDIA driver 520.61.05 or newer and NVIDIA Container Toolkit
 - A Unity build containing Unity's ROS TCP Connector and the matching project messages
 
 Docker is the only ROS/Python installation required on the host.
@@ -100,7 +100,7 @@ The checkpoint found in the old workspace root does not match the current model 
 
 ## Build details
 
-The image uses Ubuntu 20.04, ROS Noetic, CUDA 12.4, Python 3.8, PyTorch 2.4.1, and Stable-Baselines3 2.4.1. Python dependencies are pinned in `docker/requirements-linux.txt`; L4CasADi is pinned by Git revision in the Dockerfile.
+The image uses Ubuntu 20.04, ROS Noetic, CUDA 11.8, Python 3.8, PyTorch 2.4.1, and Stable-Baselines3 2.4.1. Python dependencies are pinned in `docker/requirements-linux.txt`; L4CasADi is pinned by Git revision in the Dockerfile.
 
 The RL policy was produced by the newer Windows environment. Its complete SB3 archive metadata cannot be loaded with NumPy 1.x, but the runtime node deliberately loads only `policy.pth`. That path was smoke-tested successfully with SB3 2.4.1. A full Linux container build should still be included in release CI once Docker is available.
 

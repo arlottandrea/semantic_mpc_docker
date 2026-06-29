@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-devel-ubuntu20.04 AS runtime
+FROM nvidia/cuda:11.8.0-devel-ubuntu20.04 AS runtime
 
 ARG L4CASADI_REV=9fe2894533e05009bcbfa7706966745c5236fa4c
 
@@ -30,8 +30,8 @@ COPY docker/requirements-linux.txt /tmp/requirements-linux.txt
 RUN python3 -m pip install --no-cache-dir --upgrade \
       pip==24.3.1 setuptools==75.3.2 wheel==0.45.1 \
  && python3 -m pip install --no-cache-dir \
-      torch==2.4.1+cu124 torchvision==0.19.1+cu124 \
-      --index-url https://download.pytorch.org/whl/cu124 \
+      torch==2.4.1+cu118 torchvision==0.19.1+cu118 \
+      --index-url https://download.pytorch.org/whl/cu118 \
  && python3 -m pip install --no-cache-dir -r /tmp/requirements-linux.txt
 
 # L4CasADi must see the already-installed PyTorch package during compilation.
