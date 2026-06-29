@@ -1,4 +1,4 @@
-modes: ["mower"]
+modes: ["greedy"]
 step_generator: "casadi_mpc"
 num_runs: 1
 run_root: "/runs/baseline_runs"
@@ -24,7 +24,7 @@ max_lin_accel: 1.0
 max_yaw_accel: 1.57079632679
 cmd_smoothing_alpha: 0.2
 
-obstacle_avoidance_distance: 1.5
+obstacle_avoidance_distance: 1.70
 obstacle_goal_ignore_distance: 2.0
 obstacle_cone_angle: 1.0471975512
 obstacle_tangent_gain: 3.25
