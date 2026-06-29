@@ -32,6 +32,16 @@ tree_velocity_radius: 5.0
 tree_entropy_threshold: 0.025
 tree_entropy_start_epsilon: 0.0001
 
+# RL liveness supervisor. It remains inactive while either position or entropy
+# progresses. When both stall, it briefly approaches/orbits the nearest
+# untracked tree. Interventions are logged and counted in W&B.
+rl_stall_recovery_enabled: true
+rl_stall_timeout_s: 5.0
+rl_stall_recovery_duration_s: 2.0
+rl_stall_progress_distance_m: 0.1
+rl_stall_entropy_progress: 0.005
+rl_stall_recovery_speed_mps: 0.5
+
 # Use "online" with WANDB_API_KEY configured, or sync offline runs before reporting.
 wandb_mode: "offline"
 wandb_log_period: 0.25

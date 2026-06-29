@@ -42,6 +42,13 @@ HISTORY_METRICS = [
     "mpc_step_duration_s",
     "policy_inference_time_ms",
     "controller_compute_time_ms",
+    "action/forward",
+    "action/lateral",
+    "policy_action/forward",
+    "policy_action/lateral",
+    "rl_liveness_recovery_active",
+    "rl_liveness_recovery_count",
+    "measurement_age_s",
 ]
 
 
@@ -239,6 +246,12 @@ def calculate_run_metrics(metadata, history):
         "mean_policy_inference_time_ms": _first_number(
             summary, ("mean_policy_inference_time_ms",)
         ),
+        "rl_liveness_recovery_count": _first_number(
+            summary, ("rl_liveness_recovery_count",)
+        ),
+        "rl_liveness_recovery_steps": _first_number(
+            summary, ("rl_liveness_recovery_steps",)
+        ),
         "tree_entropy_records_json": json.dumps(tree_records, sort_keys=True, default=str),
         "config_json": json.dumps(config, sort_keys=True, default=str),
     }
@@ -352,7 +365,10 @@ def download_wandb(projects, state="finished", tags=None):
 def summarize_runs(runs):
     rows = []
     for algorithm, group in runs.groupby("algorithm", dropna=False):
-        for metric in REPORT_METRICS + ["mean_velocity_reduction_per_tree_mps"]:
+        for metric in REPORT_METRICS + [
+            "mean_velocity_reduction_per_tree_mps",
+            "rl_liveness_recovery_count",
+        ]:
             values = pd.to_numeric(
                 group.get(metric, pd.Series(index=group.index, dtype=float)), errors="coerce"
             ).dropna()

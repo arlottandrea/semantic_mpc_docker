@@ -118,6 +118,13 @@ The older per-tree velocity metric is still exported: it is the time-weighted sp
 reduction from the common limit while a tree is the nearest one within
 `tree_velocity_radius`. It is not the entropy-reduction metric.
 
+Active RL also has a deterministic liveness supervisor configured by the
+`rl_stall_*` parameters in `experiment.yaml`. It only intervenes after both motion and
+entropy have stopped progressing, then briefly approaches or orbits the nearest
+untracked tree. Raw policy actions, applied actions, active recovery steps, and total
+intervention count are recorded; experiments using interventions should be described as
+RL plus liveness filtering rather than pure RL.
+
 ## Connect Unity
 
 1. Start one Docker controller profile.
