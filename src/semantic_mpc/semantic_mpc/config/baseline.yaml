@@ -1,10 +1,10 @@
-modes: ["greedy"]
+modes: ["mower"]
 step_generator: "casadi_mpc"
 num_runs: 1
 run_root: "/runs/baseline_runs"
 seed: 1
 random_initial_state: true
-start_pose: [13.387725830078125, -14.329375267028809, -0.4453626946182328]
+start_pose: []
 
 map_frame: "map"
 base_frame: "drone_base_link"
@@ -14,11 +14,11 @@ cmd_pose_queue_size: 1
 tree_scores_queue_size: 1
 tree_service: "/obj_pose_srv"
 
-hz: 4.0
+hz: 10
 tolerance: 0.2
 tree_observation_tolerance: 2.0
 min_velocity: 0.2
-max_velocity: 2.5
+max_velocity: 2.0
 max_yaw_velocity: 0.78539816339
 max_lin_accel: 1.0
 max_yaw_accel: 1.57079632679
@@ -47,7 +47,7 @@ measurement_period: 0.25
 
 mower_offset: 2.0
 mower_spacing: 4.0
-mower_heading: "N"
+mower_heading: "E"
 mower_axis: ""
 linear_same_row_tol: 0.1
 
