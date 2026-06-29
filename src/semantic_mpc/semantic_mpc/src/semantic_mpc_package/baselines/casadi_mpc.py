@@ -134,8 +134,11 @@ class CasadiMpcStepGenerator:
         cmd = np.array(solution.value(controls[:, 0]), dtype=float).flatten()
         speed = np.linalg.norm(cmd[:2])
         distance_to_goal = np.linalg.norm(goal_xy - current_pose[:2])
-        if 1e-6 < speed < self.min_velocity and distance_to_goal > self.params["tolerance"]:
-            cmd[:2] *= self.min_velocity / speed
+        if self.min_velocity > 0.0 and speed < self.min_velocity and distance_to_goal > self.params["tolerance"]:
+            if speed > 1e-6:
+                cmd[:2] *= self.min_velocity / speed
+            else:
+                cmd[:2] = (goal_xy - current_pose[:2]) / distance_to_goal * self.min_velocity
         return cmd
 
     def _fallback_command(self, current_pose, goal_xy, desired_heading, previous_cmd, desired_velocity=None):

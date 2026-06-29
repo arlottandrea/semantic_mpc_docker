@@ -203,25 +203,6 @@ class BaselineExperiment:
             self.metrics.add_distance(np.linalg.norm(cmd[:2] * self.dt))
             self.rate.sleep()
 
-    @staticmethod
-    def _is_passthrough_waypoint(previous_waypoint, waypoint, next_waypoint):
-        if previous_waypoint is None or next_waypoint is None:
-            return False
-
-        previous_xy = np.asarray(previous_waypoint[:2], dtype=float)
-        waypoint_xy = np.asarray(waypoint[:2], dtype=float)
-        next_xy = np.asarray(next_waypoint[:2], dtype=float)
-        incoming = waypoint_xy - previous_xy
-        outgoing = next_xy - waypoint_xy
-        incoming_norm = np.linalg.norm(incoming)
-        outgoing_norm = np.linalg.norm(outgoing)
-        if incoming_norm < 1e-6 or outgoing_norm < 1e-6:
-            return False
-
-        incoming_unit = incoming / incoming_norm
-        outgoing_unit = outgoing / outgoing_norm
-        return float(np.dot(incoming_unit, outgoing_unit)) > 0.999
-
     def observe_tree(self):
         if self.active_tree_idx is None:
             return
@@ -271,29 +252,18 @@ class BaselineExperiment:
             axis=self.params["mower_axis"] or None,
             seed=self.params["seed"] + self.run_index,
         )
-        rospy.loginfo("Mower baseline generated %d waypoints.", len(path))
+        rospy.loginfo("Mower baseline generated %d lane-end waypoints.", len(path))
         if not path:
             return
 
-        self.ros.publish_pose(np.array(path[0], dtype=float))
-        rospy.sleep(1.0)
-        cruise_velocity = min(self.params["mower_cruise_velocity"], self.params["max_velocity"])
-        for idx, waypoint in enumerate(path[1:], start=1):
-            next_waypoint = path[idx + 1] if idx + 1 < len(path) else None
-            pass_through = self._is_passthrough_waypoint(path[idx - 1], waypoint, next_waypoint)
-            desired_velocity = None
-            if pass_through:
-                direction = np.asarray(next_waypoint[:2], dtype=float) - np.asarray(waypoint[:2], dtype=float)
-                direction_norm = np.linalg.norm(direction)
-                if direction_norm > 1e-6:
-                    desired_velocity = direction / direction_norm * cruise_velocity
-
+        # Drive to the first lane end instead of publishing it once and
+        # assuming Unity reached it. Every remaining point is a real turn.
+        for waypoint in path:
             self.move_to_waypoint(
                 waypoint[0],
                 waypoint[1],
                 desired_heading=waypoint[2],
-                desired_velocity=desired_velocity,
-                stop_at_target=not pass_through,
+                stop_at_target=True,
             )
 
     def run_linear(self):
@@ -412,7 +382,6 @@ def load_params():
         "mower_spacing": float(_param("mower_spacing", 4.0)),
         "mower_heading": _param("mower_heading", "N"),
         "mower_axis": _param("mower_axis", ""),
-        "mower_cruise_velocity": float(_param("mower_cruise_velocity", _param("max_velocity", 1.5))),
         "linear_same_row_tol": float(_param("linear_same_row_tol", 0.01)),
         "mpc_steps": int(_param("mpc_steps", 8)),
         "mpc_max_obstacles": int(_param("mpc_max_obstacles", 8)),
