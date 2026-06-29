@@ -54,5 +54,5 @@ linear_same_row_tol: 0.1
 
 wandb_project: "semantic_mpc_baselines"
 wandb_entity: ""
-wandb_mode: "offline"
+wandb_mode: "online"
 wandb_log_period: 1.0
