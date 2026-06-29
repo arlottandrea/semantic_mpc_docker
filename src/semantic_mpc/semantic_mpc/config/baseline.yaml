@@ -17,7 +17,7 @@ tree_service: "/obj_pose_srv"
 hz: 4.0
 tolerance: 0.2
 tree_observation_tolerance: 2.0
-min_velocity: 0.0
+min_velocity: 0.2
 max_velocity: 2.5
 max_yaw_velocity: 0.78539816339
 max_lin_accel: 1.0
@@ -49,7 +49,6 @@ mower_offset: 2.0
 mower_spacing: 4.0
 mower_heading: "N"
 mower_axis: ""
-mower_cruise_velocity: 2.0
 linear_same_row_tol: 0.1
 
 wandb_project: "semantic_mpc_baselines"

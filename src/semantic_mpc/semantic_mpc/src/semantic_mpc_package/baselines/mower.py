@@ -49,14 +49,18 @@ def generate_mower_path(
     xs = xs_inc if x_start == x_min else xs_inc[::-1]
     ys = ys_inc if y_start == y_min else ys_inc[::-1]
 
+    # A mower path only needs the two ends of each lane.  The previous
+    # implementation also emitted every spacing-grid intersection along a
+    # lane, making the controller repeatedly brake and reacquire an
+    # intermediate waypoint on an otherwise straight segment.
     waypoints = []
     if axis == "x":
         for i, y in enumerate(ys):
-            row = xs if i % 2 == 0 else xs[::-1]
-            waypoints.extend((float(x), float(y), float(heading)) for x in row)
+            row_ends = (xs[0], xs[-1]) if i % 2 == 0 else (xs[-1], xs[0])
+            waypoints.extend((float(x), float(y), float(heading)) for x in row_ends)
     else:
         for i, x in enumerate(xs):
-            col = ys if i % 2 == 0 else ys[::-1]
-            waypoints.extend((float(x), float(y), float(heading)) for y in col)
+            column_ends = (ys[0], ys[-1]) if i % 2 == 0 else (ys[-1], ys[0])
+            waypoints.extend((float(x), float(y), float(heading)) for y in column_ends)
 
     return waypoints
