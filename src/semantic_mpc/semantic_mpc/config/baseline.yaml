@@ -5,6 +5,10 @@ run_root: "/runs/baseline_runs"
 seed: 1
 random_initial_state: true
 start_pose: [13.387725830078125, -14.329375267028809, -0.4453626946182328]
+initial_pose_timeout: 15.0
+initial_pose_tolerance: 0.15
+initial_heading_tolerance: 0.2
+initial_pose_publish_period: 0.1
 
 map_frame: "map"
 base_frame: "drone_base_link"
@@ -16,6 +20,8 @@ tree_service: "/obj_pose_srv"
 
 hz: 4.0
 tolerance: 0.2
+waypoint_settle_time: 0.4
+waypoint_hold_publish_period: 0.05
 tree_observation_tolerance: 2.0
 min_velocity: 0.2
 max_velocity: 2.5

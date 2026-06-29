@@ -58,8 +58,7 @@ class BaselineExperiment:
         self.lambda_values = np.full(len(self.tree_positions), 0.5)
         initial_pose = self.resolve_initial_pose()
         if initial_pose is not None:
-            self.ros.publish_pose(initial_pose)
-            rospy.sleep(2.5)
+            self.apply_initial_pose(initial_pose)
 
         self.metrics.start()
         self.initial_entropy = BeliefState.binary_entropy(self.lambda_values)
@@ -76,6 +75,42 @@ class BaselineExperiment:
             return None
 
         return corner_initial_pose(self.tree_positions)
+
+    def apply_initial_pose(self, initial_pose):
+        """Publish and verify the requested simulation reset pose."""
+        initial_pose = np.asarray(initial_pose, dtype=float).flatten()[:3]
+        timeout = max(0.1, self.params["initial_pose_timeout"])
+        position_tolerance = self.params["initial_pose_tolerance"]
+        heading_tolerance = self.params["initial_heading_tolerance"]
+        publish_period = max(0.02, self.params["initial_pose_publish_period"])
+        deadline = time.time() + timeout
+
+        rospy.loginfo(
+            "Resetting robot to initial pose [%.3f, %.3f, %.3f].",
+            initial_pose[0],
+            initial_pose[1],
+            initial_pose[2],
+        )
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self.ros.publish_pose(initial_pose)
+            current_pose = self.ros.robot_pose(default=None, timeout=min(0.2, publish_period))
+            if current_pose is not None:
+                position_error = np.linalg.norm(current_pose[:2] - initial_pose[:2])
+                heading_error = abs(normalize_angle(current_pose[2] - initial_pose[2]))
+                if position_error <= position_tolerance and heading_error <= heading_tolerance:
+                    self.prev_cmd = np.zeros(3)
+                    rospy.loginfo(
+                        "Initial pose confirmed (position error %.3fm, heading error %.3frad).",
+                        position_error,
+                        heading_error,
+                    )
+                    return
+            rospy.sleep(publish_period)
+
+        raise RuntimeError(
+            "Robot did not reach the configured start_pose within {:.1f}s; "
+            "check the Unity /agent_0/cmd/pose subscriber and map -> drone_base_link TF.".format(timeout)
+        )
 
     def measurement_callback(self, _event):
         scores = self.ros.get_tree_scores(column=0)
@@ -186,12 +221,15 @@ class BaselineExperiment:
             entropy = BeliefState.binary_entropy(self.lambda_values)
             self.metrics.log_pose(current_pose, entropy)
 
-            if np.linalg.norm(current_pose[:2] - target) < tolerance:
+            distance_to_target = np.linalg.norm(current_pose[:2] - target)
+            if distance_to_target <= tolerance:
                 if stop_at_target:
-                    self.prev_cmd = np.zeros(3)
+                    self.hold_pose(current_pose)
                 return
 
             cmd = self.command_from_goal(current_pose, target, desired_heading, desired_velocity)
+            if stop_at_target:
+                cmd = self.apply_waypoint_braking(cmd, distance_to_target, tolerance)
             next_pose = np.array(
                 [
                     current_pose[0] + cmd[0] * self.dt,
@@ -202,6 +240,37 @@ class BaselineExperiment:
             self.ros.publish_pose(next_pose)
             self.metrics.add_distance(np.linalg.norm(cmd[:2] * self.dt))
             self.rate.sleep()
+
+    def apply_waypoint_braking(self, cmd, distance_to_target, tolerance):
+        """Limit approach speed so a command cannot carry the robot past a stop waypoint."""
+        cmd = np.asarray(cmd, dtype=float).copy()
+        # Aim halfway inside the acceptance radius. Stopping exactly on its
+        # boundary can produce sub-millimetre setpoint updates that Unity
+        # ignores, leaving the loop just outside tolerance.
+        remaining = max(0.0, float(distance_to_target) - 0.5 * float(tolerance))
+        speed = np.linalg.norm(cmd[:2])
+        if speed <= 1e-9:
+            return cmd
+
+        acceleration = max(self.params["max_lin_accel"], 1e-6)
+        braking_speed = math.sqrt(2.0 * acceleration * remaining)
+        one_step_speed = remaining / max(self.dt, 1e-6)
+        allowed_speed = min(self.params["max_velocity"], braking_speed, one_step_speed)
+        if speed > allowed_speed:
+            cmd[:2] *= allowed_speed / speed
+            self.prev_cmd = cmd.copy()
+        return cmd
+
+    def hold_pose(self, current_pose):
+        """Cancel residual motion and keep publishing the measured pose while Unity settles."""
+        self.prev_cmd = np.zeros(3)
+        hold_target = np.asarray(current_pose, dtype=float).copy()
+        settle_time = max(0.0, self.params["waypoint_settle_time"])
+        publish_period = max(0.02, self.params["waypoint_hold_publish_period"])
+        deadline = time.time() + settle_time
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self.ros.publish_pose(hold_target)
+            rospy.sleep(publish_period)
 
     def observe_tree(self):
         if self.active_tree_idx is None:
@@ -352,6 +421,10 @@ def load_params():
         "seed": int(_param("seed", 1)),
         "random_initial_state": bool(_param("random_initial_state", True)),
         "start_pose": _param("start_pose", None),
+        "initial_pose_timeout": float(_param("initial_pose_timeout", 15.0)),
+        "initial_pose_tolerance": float(_param("initial_pose_tolerance", 0.15)),
+        "initial_heading_tolerance": float(_param("initial_heading_tolerance", 0.2)),
+        "initial_pose_publish_period": float(_param("initial_pose_publish_period", 0.1)),
         "map_frame": _param("map_frame", "map"),
         "base_frame": _param("base_frame", "drone_base_link"),
         "tree_scores_topic": _param("tree_scores_topic", "tree_scores"),
@@ -362,6 +435,8 @@ def load_params():
         "hz": hz,
         "dt": dt,
         "tolerance": float(_param("tolerance", 0.2)),
+        "waypoint_settle_time": float(_param("waypoint_settle_time", 0.4)),
+        "waypoint_hold_publish_period": float(_param("waypoint_hold_publish_period", 0.05)),
         "tree_observation_tolerance": float(_param("tree_observation_tolerance", 2.0)),
         "min_velocity": float(_param("min_velocity", 0.0)),
         "max_velocity": float(_param("max_velocity", 1.5)),

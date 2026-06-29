@@ -121,7 +121,8 @@ class CasadiMpcStepGenerator:
         opti.solver(
             "ipopt",
             {
-                "print_time": True,
+                "print_time": False,
+                "verbose": False,
                 "ipopt": {
                     "print_level": 0,
                     "max_iter": self.ipopt_max_iter,
