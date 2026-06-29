@@ -1,6 +1,6 @@
 # Shared paired-trial configuration for baseline, active-RL, and NMPC evaluation.
 # Trial i always uses trial_seed = seed + run_index_offset + i.
-num_runs: 1
+num_runs: 50
 run_index_offset: 0
 seed: 1
 
@@ -9,7 +9,7 @@ start_pose: []
 # These defaults coincide with the mower lane boundary and its configured
 # north-facing sensor heading, so the reset pose is exactly mower path[0].
 initial_corner_margin: 2.0
-mower_heading: "N"
+mower_heading: "E"
 mower_heading_random: false
 initial_pose_timeout: 15.0
 initial_pose_tolerance: 0.15
@@ -33,5 +33,5 @@ tree_entropy_threshold: 0.025
 tree_entropy_start_epsilon: 0.0001
 
 # Use "online" with WANDB_API_KEY configured, or sync offline runs before reporting.
-wandb_mode: "offline"
+wandb_mode: "online"
 wandb_log_period: 0.25
