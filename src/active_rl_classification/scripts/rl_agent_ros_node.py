@@ -2,6 +2,7 @@
 import math
 import os
 import io
+import time
 import zipfile
 
 import gymnasium as gym
@@ -14,7 +15,13 @@ import torch as th
 from geometry_msgs.msg import Point, Pose, Quaternion
 from gymnasium import spaces
 from semantic_mpc.srv import GetTreesPoses
-from semantic_mpc_package.experiment_metrics import RosWandbLogger
+from semantic_mpc_package.experiment_metrics import (
+    PerTreeEntropyMetrics,
+    RosWandbLogger,
+    VelocityTreeMetrics,
+)
+from semantic_mpc_package.ros_experiment import normalize_angle, seeded_corner_initial_pose
+from semantic_mpc_package.baselines import resolve_mower_heading
 from stable_baselines3 import PPO
 from std_msgs.msg import Bool, Float32, Float32MultiArray, MultiArrayDimension
 
@@ -61,7 +68,8 @@ class RLAgentNode:
         self.k_obs = int(rospy.get_param("~k_obs", 5))
         self.nclasses = 2
         self.obs_range = float(rospy.get_param("~obs_range", 5))
-        self.step_frequency = float(rospy.get_param("~step_frequency", 4.0))
+        self.delta_t = float(rospy.get_param("~dt", rospy.get_param("~delta_t", 0.25)))
+        self.step_frequency = float(rospy.get_param("~step_frequency", 1.0 / max(self.delta_t, 1e-6)))
         self.entropy_target = float(rospy.get_param("~entropy_target", 0.99))
         self.deterministic = bool(rospy.get_param("~deterministic", True))
         self.map_frame = rospy.get_param("~map_frame", "map")
@@ -80,9 +88,35 @@ class RLAgentNode:
         self.obs_tracked_topic = rospy.get_param("~obs_tracked_topic", "rl/obs/tracked")
         self.obs_mask_topic = rospy.get_param("~obs_mask_topic", "rl/obs/mask")
         self.publish_observations = bool(rospy.get_param("~publish_observations", True))
-        self.action_scale = np.array([2.0, 2.0, 1.0], dtype=np.float32)
-        self.delta_t = float(rospy.get_param("~delta_t", 0.25))
-        self.run_index = int(rospy.get_param("~run_index", 0))
+        self.max_velocity = float(rospy.get_param("~max_velocity", 1.75))
+        self.max_yaw_velocity = float(rospy.get_param("~max_yaw_velocity", math.pi / 4.0))
+        self.max_lin_accel = float(rospy.get_param("~max_lin_accel", 1.0))
+        self.max_yaw_accel = float(rospy.get_param("~max_yaw_accel", math.pi / 2.0))
+        self.safe_distance = float(rospy.get_param("~safe_distance", 1.5))
+        self.measurement_period = float(rospy.get_param("~measurement_period", self.delta_t))
+        self.tree_velocity_radius = float(rospy.get_param("~tree_velocity_radius", 5.0))
+        self.tree_entropy_threshold = float(rospy.get_param("~tree_entropy_threshold", 0.025))
+        self.tree_entropy_start_epsilon = float(
+            rospy.get_param("~tree_entropy_start_epsilon", 1e-4)
+        )
+        self.num_runs = int(rospy.get_param("~num_runs", 1))
+        self.run_index_offset = int(
+            rospy.get_param("~run_index_offset", rospy.get_param("~run_index", 0))
+        )
+        self.base_seed = int(rospy.get_param("~seed", 1))
+        self.random_initial_state = bool(rospy.get_param("~random_initial_state", True))
+        self.start_pose = rospy.get_param("~start_pose", None)
+        if self.start_pose in ("", [], None):
+            self.start_pose = None
+        self.initial_corner_margin = float(rospy.get_param("~initial_corner_margin", 1.5))
+        self.mower_heading = rospy.get_param("~mower_heading", "N")
+        self.mower_heading_random = bool(rospy.get_param("~mower_heading_random", False))
+        self.initial_pose_timeout = float(rospy.get_param("~initial_pose_timeout", 15.0))
+        self.initial_pose_tolerance = float(rospy.get_param("~initial_pose_tolerance", 0.15))
+        self.initial_heading_tolerance = float(rospy.get_param("~initial_heading_tolerance", 0.2))
+        self.initial_pose_publish_period = float(rospy.get_param("~initial_pose_publish_period", 0.1))
+        self.run_index = self.run_index_offset
+        self.trial_seed = self.base_seed + self.run_index
 
         pkg_root = package_root()
         default_model = os.path.join(pkg_root, "artifacts", "gym", "models", "final_model.zip")
@@ -138,29 +172,49 @@ class RLAgentNode:
         self._prev_position = None
         self.total_distance = 0.0
         self.steps = 0
-        self.metrics = RosWandbLogger(
-            "rl_agent",
-            self.run_index,
-            self._wandb_params(model_path, device),
-            default_project="active_rl_classification",
-        )
+        self._prev_world_velocity = np.zeros(2, dtype=np.float32)
+        self._prev_yaw_velocity = 0.0
+        self._last_command = np.zeros(3, dtype=np.float32)
+        self.velocity_metrics = None
+        self.entropy_metrics = None
+        self._last_velocity_metrics = {}
+        self.policy_inference_times_ms = []
+        self.controller_compute_times_ms = []
+        self.model_path = model_path
+        self.model_device = device
+        self.metrics = None
 
     def _wandb_params(self, model_path, device):
+        run_name = rospy.get_param("~wandb_name", "") or "rl_agent_run_{:03d}".format(self.run_index)
+        run_root = rospy.get_param("~run_dir", "/runs/rl")
         return {
             "wandb_project": rospy.get_param("~wandb_project", "active_rl_classification"),
             "wandb_entity": rospy.get_param("~wandb_entity", ""),
             "wandb_mode": rospy.get_param("~wandb_mode", "offline"),
-            "wandb_name": rospy.get_param("~wandb_name", "rl_agent_run_{:03d}".format(self.run_index)),
+            "wandb_name": run_name,
             "wandb_log_period": float(rospy.get_param("~wandb_log_period", 1.0)),
-            "run_dir": rospy.get_param(
-                "~run_dir",
-                "/runs/rl",
-            ),
+            "run_dir": os.path.join(run_root, run_name),
+            "run_index": self.run_index,
+            "trial_seed": self.trial_seed,
+            "base_seed": self.base_seed,
+            "mower_heading": self.mower_heading,
+            "mower_heading_random": self.mower_heading_random,
             "k_obs": self.k_obs,
             "obs_range": self.obs_range,
             "step_frequency": self.step_frequency,
+            "control_period": self.delta_t,
+            "measurement_period": self.measurement_period,
+            "max_velocity": self.max_velocity,
+            "max_yaw_velocity": self.max_yaw_velocity,
+            "max_lin_accel": self.max_lin_accel,
+            "max_yaw_accel": self.max_yaw_accel,
+            "safe_distance": self.safe_distance,
+            "tree_velocity_radius": self.tree_velocity_radius,
+            "tree_entropy_threshold": self.tree_entropy_threshold,
+            "tree_entropy_start_epsilon": self.tree_entropy_start_epsilon,
             "entropy_target": self.entropy_target,
             "deterministic": self.deterministic,
+            "termination_criterion": "untracked_entropy_fraction_target",
             "model_path": model_path,
             "device": device,
             "map_frame": self.map_frame,
@@ -296,21 +350,109 @@ class RLAgentNode:
         )
         return self.drone
 
+    def _resolve_initial_pose(self):
+        if self.start_pose is not None:
+            return np.asarray(self.start_pose, dtype=float).flatten()[:3]
+        if not self.random_initial_state:
+            return None
+        heading_direction = None if self.mower_heading_random else self.mower_heading
+        initial_heading = resolve_mower_heading(heading_direction, seed=self.trial_seed)
+        return seeded_corner_initial_pose(
+            self.trees,
+            self.trial_seed,
+            margin=self.initial_corner_margin,
+            heading=initial_heading,
+        )
+
+    def _publish_pose(self, pose_values):
+        pose_values = np.asarray(pose_values, dtype=float).flatten()[:3]
+        q = tf.transformations.quaternion_from_euler(0.0, 0.0, float(pose_values[2]))
+        pose = Pose()
+        pose.position = Point(x=float(pose_values[0]), y=float(pose_values[1]), z=0.0)
+        pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.cmd_pose_pub.publish(pose)
+
+    def _apply_initial_pose(self, initial_pose):
+        initial_pose = np.asarray(initial_pose, dtype=float).flatten()[:3]
+        timeout = max(0.1, self.initial_pose_timeout)
+        publish_period = max(0.02, self.initial_pose_publish_period)
+        deadline = time.time() + timeout
+        rospy.loginfo(
+            "RL trial %d seed %d: resetting to [%.3f, %.3f, %.3f].",
+            self.run_index,
+            self.trial_seed,
+            initial_pose[0],
+            initial_pose[1],
+            initial_pose[2],
+        )
+
+        while not rospy.is_shutdown() and time.time() < deadline:
+            self._publish_pose(initial_pose)
+            try:
+                current = self._read_drone_pose().copy()
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ):
+                rospy.sleep(publish_period)
+                continue
+
+            position_error = np.linalg.norm(current[:2] - initial_pose[:2])
+            heading_error = abs(
+                normalize_angle(math.radians(float(current[2])) - float(initial_pose[2]))
+            )
+            if (
+                position_error <= self.initial_pose_tolerance
+                and heading_error <= self.initial_heading_tolerance
+            ):
+                rospy.loginfo(
+                    "RL initial pose confirmed (position error %.3fm, heading error %.3frad).",
+                    position_error,
+                    heading_error,
+                )
+                return
+            rospy.sleep(publish_period)
+
+        raise RuntimeError(
+            "RL trial {} seed {} did not reach its initial pose within {:.1f}s.".format(
+                self.run_index, self.trial_seed, timeout
+            )
+        )
+
     def reset(self):
         self.trees, self.tree_classes = self._get_tree_poses_and_types()
         self.ntargets = int(self.trees.shape[0])
         if self.ntargets == 0:
             raise RuntimeError("No trees returned by {}".format(self.tree_pose_service))
 
-        self._read_drone_pose()
+        initial_pose = self._resolve_initial_pose()
+        if initial_pose is not None:
+            self._apply_initial_pose(initial_pose)
+        else:
+            self._read_drone_pose()
         self.beliefs = self.uniform_proba[None, :].repeat(self.ntargets, axis=0)
         self.tracked = np.max(self.beliefs, axis=1) >= BELIEF_THRESHOLD
         self._observations = self.uniform_proba[None, :].repeat(self.ntargets, axis=0)
+        self._latest_measurements = None
         self._prev_entropy = self.total_entropy(include_tracked=False)
         self._initial_entropy = self.ntargets * self.max_entropy
         self._prev_position = self.drone[:2].copy()
         self.total_distance = 0.0
         self.steps = 0
+        self._prev_world_velocity = np.zeros(2, dtype=np.float32)
+        self._prev_yaw_velocity = 0.0
+        self._last_command = np.zeros(3, dtype=np.float32)
+        self.velocity_metrics = VelocityTreeMetrics(self.max_velocity, self.tree_velocity_radius)
+        self._last_velocity_metrics = self.velocity_metrics.update(0.0, self.drone, self.trees)
+        self.entropy_metrics = PerTreeEntropyMetrics(
+            self.tree_entropy_threshold,
+            self.tree_entropy_start_epsilon,
+        )
+        self.entropy_metrics.update(0.0, self.beliefs)
+        self.policy_inference_times_ms = []
+        self.controller_compute_times_ms = []
+        self.done_pub.publish(Bool(data=False))
         self.metrics.start()
         obs = self._build_obs()
         self._publish_obs(obs)
@@ -405,25 +547,117 @@ class RLAgentNode:
         self.obs_mask_pub.publish(make_vector_msg(obs["mask"], ["target"]))
 
     def _predict_action(self, obs):
+        inference_start = time.perf_counter()
         action, _ = self.model.predict(obs, deterministic=self.deterministic)
+        self.policy_inference_times_ms.append((time.perf_counter() - inference_start) * 1000.0)
         return np.asarray(action, dtype=np.float32).reshape(3)
 
     def _publish_step(self, action):
         self.action_pub.publish(make_float32_multiarray(action))
+        command_compute_start = time.perf_counter()
 
-        applied = action * self.action_scale * self.delta_t
+        local_velocity = np.asarray(action[:2], dtype=np.float32) * self.max_velocity
+        local_speed = np.linalg.norm(local_velocity)
+        if local_speed > self.max_velocity:
+            local_velocity *= self.max_velocity / local_speed
         heading = self.drone[2]
         c = np.cos(np.radians(heading))
         s = np.sin(np.radians(heading))
-        world_delta = np.array([[c, -s], [s, c]], dtype=np.float32) @ applied[:2]
-        target_xy = self.drone[:2] + world_delta
-        target_heading_deg = (heading + 60.0 * applied[2]) % 360.0
+        world_velocity = np.array([[c, -s], [s, c]], dtype=np.float32) @ local_velocity
+        max_delta_velocity = self.max_lin_accel * self.delta_t
+        world_velocity = self._prev_world_velocity + np.clip(
+            world_velocity - self._prev_world_velocity,
+            -max_delta_velocity,
+            max_delta_velocity,
+        )
+        world_velocity = self._apply_obstacle_safety_filter(world_velocity)
+
+        yaw_velocity = float(np.clip(action[2], -1.0, 1.0)) * self.max_yaw_velocity
+        max_delta_yaw = self.max_yaw_accel * self.delta_t
+        yaw_velocity = self._prev_yaw_velocity + float(
+            np.clip(yaw_velocity - self._prev_yaw_velocity, -max_delta_yaw, max_delta_yaw)
+        )
+        target_xy = self.drone[:2] + world_velocity * self.delta_t
+        target_heading_deg = (heading + math.degrees(yaw_velocity * self.delta_t)) % 360.0
         q = tf.transformations.quaternion_from_euler(0.0, 0.0, math.radians(target_heading_deg))
 
         pose = Pose()
         pose.position = Point(x=float(target_xy[0]), y=float(target_xy[1]), z=0.0)
         pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self._prev_world_velocity = world_velocity.astype(np.float32)
+        self._prev_yaw_velocity = yaw_velocity
+        self._last_command = np.array([world_velocity[0], world_velocity[1], yaw_velocity], dtype=np.float32)
+        command_compute_time_ms = (time.perf_counter() - command_compute_start) * 1000.0
         self.cmd_pose_pub.publish(pose)
+        return command_compute_time_ms
+
+    def _apply_obstacle_safety_filter(self, world_velocity):
+        """Project the RL direction onto safe, tangential tree-bypass directions."""
+        velocity = np.asarray(world_velocity, dtype=np.float32).copy()
+        lookahead = self.safe_distance + self.max_velocity * self.delta_t
+        for tree_id, tree in enumerate(self.trees):
+            radial = self.drone[:2] - tree
+            distance = float(np.linalg.norm(radial))
+            if distance < 1e-6 or distance > lookahead:
+                continue
+            radial /= distance
+            desired_speed = float(np.linalg.norm(velocity))
+            outward_speed = float(np.dot(velocity, radial))
+            minimum_outward_speed = (self.safe_distance - distance) / max(self.delta_t, 1e-6)
+            if outward_speed >= minimum_outward_speed:
+                continue
+
+            # Keep the feasible radial component and use the closest tangent to
+            # continue around the obstacle instead of stopping on a head-on path.
+            radial_speed = float(
+                np.clip(max(outward_speed, minimum_outward_speed), -self.max_velocity, self.max_velocity)
+            )
+            tangent = np.array([-radial[1], radial[0]], dtype=np.float32)
+            tangent_alignment = float(np.dot(world_velocity, tangent))
+            if tangent_alignment < -1e-9 or (
+                abs(tangent_alignment) <= 1e-9 and (self.trial_seed + tree_id) % 2
+            ):
+                tangent = -tangent
+            proximity = np.clip(
+                (lookahead - distance) / max(lookahead - self.safe_distance, 1e-6),
+                0.0,
+                1.0,
+            )
+            current_tangent = float(np.dot(velocity, tangent))
+            target_tangent = max(abs(current_tangent), desired_speed * float(proximity))
+            max_tangent = math.sqrt(max(0.0, self.max_velocity ** 2 - radial_speed ** 2))
+            velocity = radial_speed * radial + min(target_tangent, max_tangent) * tangent
+
+        # The bypass itself must respect the same acceleration envelope as the
+        # policy command. Safety takes priority only if the current state is
+        # already too close for a feasible acceleration-limited correction.
+        max_delta_velocity = self.max_lin_accel * self.delta_t
+        limited = self._prev_world_velocity + np.clip(
+            velocity - self._prev_world_velocity,
+            -max_delta_velocity,
+            max_delta_velocity,
+        )
+        speed = float(np.linalg.norm(limited))
+        if speed > self.max_velocity:
+            limited *= self.max_velocity / speed
+        emergency_correction = False
+        for tree in self.trees:
+            radial = self.drone[:2] - tree
+            distance = float(np.linalg.norm(radial))
+            if distance < 1e-6 or distance > lookahead:
+                continue
+            radial /= distance
+            minimum_outward_speed = (self.safe_distance - distance) / max(self.delta_t, 1e-6)
+            shortfall = minimum_outward_speed - float(np.dot(limited, radial))
+            if shortfall > 1e-6:
+                limited += shortfall * radial
+                emergency_correction = True
+        if emergency_correction:
+            rospy.logwarn_throttle(
+                2.0,
+                "RL safety filter required an emergency correction beyond the nominal acceleration envelope.",
+            )
+        return limited.astype(np.float32)
 
     def _update_beliefs_from_measurements(self):
         if self._latest_measurements is None:
@@ -458,7 +692,14 @@ class RLAgentNode:
         new_targets_tracked = self._update_beliefs_from_measurements()
         obs = self._build_obs()
         action = self._predict_action(obs)
-        self._publish_step(action)
+        command_compute_time_ms = self._publish_step(action)
+        self.controller_compute_times_ms.append(
+            self.policy_inference_times_ms[-1] + command_compute_time_ms
+        )
+        self._last_velocity_metrics = self.velocity_metrics.update(
+            self.metrics.elapsed(), self.drone, self.trees
+        )
+        self.entropy_metrics.update(self.metrics.elapsed(), self.beliefs)
         self._publish_obs(obs)
 
         curr_entropy = self.total_entropy(include_tracked=False)
@@ -495,11 +736,18 @@ class RLAgentNode:
                 "action/forward": float(action[0]),
                 "action/lateral": float(action[1]),
                 "action/yaw_rate": float(action[2]),
+                "command/vx_mps": float(self._last_command[0]),
+                "command/vy_mps": float(self._last_command[1]),
+                "command/yaw_rate_radps": float(self._last_command[2]),
+                "command/speed_mps": float(np.linalg.norm(self._last_command[:2])),
+                **self._last_velocity_metrics,
                 "belief_mean": float(np.mean(self.beliefs)) if self.beliefs is not None else 0.0,
+                "policy_inference_time_ms": self.policy_inference_times_ms[-1],
+                "controller_compute_time_ms": self.controller_compute_times_ms[-1],
             }
         )
 
-    def run(self):
+    def _run_trial(self):
         self.reset()
         rate = rospy.Rate(self.step_frequency)
         while (
@@ -527,6 +775,8 @@ class RLAgentNode:
 
         self.done_pub.publish(Bool(data=True))
         final_entropy = self.total_entropy(include_tracked=False)
+        inference_times = np.asarray(self.policy_inference_times_ms, dtype=float)
+        compute_times = np.asarray(self.controller_compute_times_ms, dtype=float)
         summary = self.metrics.finish(
             {
                 "total_time_execution_s": self.metrics.elapsed(),
@@ -537,14 +787,39 @@ class RLAgentNode:
                 "entropy_reduction": self._initial_entropy - final_entropy,
                 "num_tracked_final": int(np.sum(self.tracked)) if self.tracked is not None else 0,
                 "total_targets": self.ntargets,
+                **self.velocity_metrics.summary(),
+                **self.entropy_metrics.summary(final_time=self.metrics.elapsed()),
+                "mean_policy_inference_time_ms": float(np.mean(inference_times)) if inference_times.size else np.nan,
+                "median_policy_inference_time_ms": float(np.median(inference_times)) if inference_times.size else np.nan,
+                "p95_policy_inference_time_ms": float(np.percentile(inference_times, 95)) if inference_times.size else np.nan,
+                "mean_controller_compute_time_ms": float(np.mean(compute_times)) if compute_times.size else np.nan,
+                "median_controller_compute_time_ms": float(np.median(compute_times)) if compute_times.size else np.nan,
+                "p95_controller_compute_time_ms": float(np.percentile(compute_times, 95)) if compute_times.size else np.nan,
             }
         )
         rospy.loginfo(
-            "RL run complete after %d steps. Final entropy %.3f/%.3f.",
+            "RL trial %d seed %d complete after %d steps. Final entropy %.3f/%.3f.",
+            self.run_index,
+            self.trial_seed,
             self.steps,
             summary["final_entropy"],
             self._initial_entropy,
         )
+
+    def run(self):
+        last_run_index = self.run_index_offset + self.num_runs
+        for run_index in range(self.run_index_offset, last_run_index):
+            if rospy.is_shutdown():
+                return
+            self.run_index = run_index
+            self.trial_seed = self.base_seed + run_index
+            self.metrics = RosWandbLogger(
+                "rl_agent",
+                self.run_index,
+                self._wandb_params(self.model_path, self.model_device),
+                default_project="active_rl_classification",
+            )
+            self._run_trial()
 
 
 if __name__ == "__main__":
