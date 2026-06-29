@@ -70,6 +70,54 @@ Run preflight checks without starting anything:
 ./scripts/doctor.sh nmpc
 ```
 
+### Reproducible paired trials
+
+Baseline, active-RL, and NMPC evaluations share `src/semantic_mpc/semantic_mpc/config/experiment.yaml`.
+For absolute run index `i`, all controllers use `trial_seed = seed + i` and therefore reset to
+the same deterministically selected field corner. Set `num_runs` for the batch size and use
+`run_index_offset` to continue a later batch without repeating trial seeds. A non-empty
+`start_pose` overrides seeded corner selection. Set `mower_heading_random: true` to choose
+N/E/S/W deterministically from the same trial seed; the reset orientation and mower path
+always use the same sampled heading.
+
+### Batch reports from W&B
+
+After the runs are synced to W&B, generate CSV, a multi-sheet XLSX workbook, box plots,
+and normalized entropy/velocity profiles with:
+
+Set `wandb_mode: "online"` in the shared `config/experiment.yaml` when running the batch
+(and keep `WANDB_API_KEY` in `.env`), or sync offline runs before invoking the reporter.
+
+```bash
+docker compose run --rm --no-deps --entrypoint python baseline \
+  /workspace/scripts/generate_wandb_report.py \
+  --project <entity>/semantic_mpc_baselines \
+  --project <entity>/active_rl_classification \
+  --project <entity>/semantic_mpc \
+  --output-dir /runs/reports/latest
+```
+
+Outputs are written under `runs/reports/latest/`. The `fairness_audit` CSV/XLSX sheet
+compares the effective control period, sampling period, velocity/acceleration limits,
+and obstacle clearance recorded in each run configuration. Treat an algorithm ranking
+as invalid while any required fairness row is `FAIL`. `pairing_audit` also requires exactly
+one run per algorithm and trial seed; summary tables and plots use complete pairs only.
+
+The report uses measured trajectory distance/time for mean velocity. For every tree,
+entropy convergence starts at the first reduction larger than
+`tree_entropy_start_epsilon` and ends at the first sample below
+`tree_entropy_threshold`. `tree_metrics.csv` and the XLSX `tree_metrics` sheet retain
+unfinished trees as right-censored records. The report compares convergence time,
+entropy-reduction rate in bit/s, completion rate, final entropy, elapsed time, velocity,
+and controller computation time (mean/median/p95). RL policy inference time is also
+recorded separately. Timings use a monotonic high-resolution clock and exclude the
+control-loop sleep. `paired_comparisons.csv` reports seed-matched differences and their
+95% confidence intervals instead of treating paired trials as independent samples.
+
+The older per-tree velocity metric is still exported: it is the time-weighted speed
+reduction from the common limit while a tree is the nearest one within
+`tree_velocity_radius`. It is not the entropy-reduction metric.
+
 ## Connect Unity
 
 1. Start one Docker controller profile.

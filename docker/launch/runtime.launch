@@ -35,6 +35,7 @@
   <group if="$(eval arg('controller') == 'baseline')">
     <node name="baseline_node" pkg="semantic_mpc" type="baseline_node.py"
           output="screen" ns="agent_0" required="true">
+      <rosparam command="load" file="$(find semantic_mpc)/config/experiment.yaml"/>
       <rosparam command="load" file="$(find semantic_mpc)/config/baseline.yaml"/>
     </node>
   </group>
@@ -42,6 +43,7 @@
   <group if="$(eval arg('controller') == 'rl')">
     <node name="rl_node" pkg="active_rl_classification" type="rl_agent_ros_node.py"
           output="screen" ns="agent_0" required="true">
+      <rosparam command="load" file="$(find semantic_mpc)/config/experiment.yaml"/>
       <param name="model_path" value="$(arg rl_policy_path)"/>
       <param name="device" value="auto"/>
       <param name="run_dir" value="/runs/rl"/>
@@ -51,6 +53,7 @@
   <group if="$(eval arg('controller') == 'nmpc')">
     <node name="main_node" pkg="semantic_mpc" type="nmpc_node.py"
           output="screen" ns="agent_0" required="true">
+      <rosparam command="load" file="$(find semantic_mpc)/config/experiment.yaml"/>
       <rosparam command="load" file="$(find semantic_mpc)/config/nmpc.yaml"/>
       <param name="model_device" value="$(arg nmpc_device)"/>
     </node>
