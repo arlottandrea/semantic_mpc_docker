@@ -1,0 +1,41 @@
+seed: 42
+device: auto
+
+dataset:
+  # Manifest columns: x,y,yaw,image_path. Relative image paths are resolved
+  # against the manifest directory. Use "latest" to select the newest CSV.
+  input_manifest: /data/raw/no_fog/TreeDatasetCNN.csv
+  # This may equal input_manifest: the completed CSV is replaced atomically.
+  output_csv: /data/raw/no_fog/TreeDatasetCNN.csv
+  annotations_dir: /data/raw/no_fog/detections
+  weights: /models/yolo/apples.pt
+  yolo_source: /workspace/src/yolov7-ros/src
+  image_size: 640
+  batch_size: 8
+  confidence_threshold: 0.6
+  iou_threshold: 0.7
+  ripe_class: Ripe_Apple
+  raw_class: Raw_Apple
+  score_midpoint: 5
+  score_steepness: 10.0
+  save_annotations: true
+
+training:
+  input_csv: /data/raw/no_fog/TreeDatasetCNN.csv
+  output_dir: /models/nmpc
+  # Avoid a stale higher-epoch file being selected by the NMPC runtime.
+  replace_existing_checkpoints: true
+  labels: [ripe, raw]
+  input_dim: 3
+  output_dim: 2
+  hidden_size: 64
+  hidden_layers: 3
+  threshold: 8.0
+  gate_slope: 10.0
+  validation_split: 0.35
+  batch_size: 32
+  epochs: 20
+  learning_rate: 0.001
+  augment_fraction: 0.2
+  augment_distance_margin: 5.0
+  num_workers: 0

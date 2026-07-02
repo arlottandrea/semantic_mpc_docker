@@ -35,6 +35,39 @@ x-runtime: &runtime
   stop_grace_period: 10s
 
 services:
+  dataset-generate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: [pipeline]
+    init: true
+    user: "${RUNTIME_UID:-1000}:${RUNTIME_GID:-1000}"
+    environment:
+      HOME: /runs/home
+    volumes:
+      - ./datasets:/data
+      - ./models:/models:ro
+      - ./mlp_pipeline/config.yaml:/config/pipeline.yaml:ro
+    entrypoint: ["python3", "/workspace/mlp_pipeline/generate.py"]
+    command: ["--config", "/config/pipeline.yaml"]
+
+  model-train:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: [pipeline]
+    init: true
+    user: "${RUNTIME_UID:-1000}:${RUNTIME_GID:-1000}"
+    environment:
+      HOME: /runs/home
+    volumes:
+      - ./datasets:/data:ro
+      - ./models:/models
+      - ./runs:/runs
+      - ./mlp_pipeline/config.yaml:/config/pipeline.yaml:ro
+    entrypoint: ["bash", "-lc"]
+    command: ["source /workspace/devel/setup.bash && python3 /workspace/mlp_pipeline/train.py --config /config/pipeline.yaml"]
+
   baseline:
     <<: *runtime
     profiles: [baseline]

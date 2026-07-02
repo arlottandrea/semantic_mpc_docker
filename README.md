@@ -202,6 +202,15 @@ models/nmpc/ripe/best_model_epoch_<N>.pth
 models/nmpc/raw/best_model_epoch_<N>.pth
 ```
 
+Generate the YOLO-derived training dataset and train both surrogate models with
+the YAML-driven Docker pipeline documented in
+`mlp_pipeline/README.md`:
+
+```bash
+docker compose --profile pipeline run --rm dataset-generate
+docker compose --profile pipeline run --rm model-train
+```
+
 The checkpoint found in the old workspace root does not match the current model layout and was not packaged as a valid NMPC model. See `models/README.md`.
 
 ## Build details

@@ -44,6 +44,7 @@ RUN python3 -m pip install --no-cache-dir --no-build-isolation \
 COPY src /workspace/src
 COPY docker /workspace/docker
 COPY scripts /workspace/scripts
+COPY mlp_pipeline /workspace/mlp_pipeline
 
 # These links may point at absent build-time paths; Compose mounts the runtime
 # model directories at /models when the container starts.
