@@ -101,11 +101,14 @@ class NmpcOptimizer:
         """Expected entropy after one measurement, marginalizing both outcomes.
 
         Rows are targets. Prior columns are the two classes. Each likelihood
-        matrix contains P(measurement | true class) for the two outcomes.
+        matrix contains P(measurement | true class). The structured model uses
+        the three outcomes [none, observed_ripe, observed_raw].
         """
         eps = 1e-9
         expected_entropy = ca.MX.zeros(prior.size1(), 1)
-        for observation in range(2):
+        if likelihood_if_class0.size2() != likelihood_if_class1.size2():
+            raise ValueError("class-conditional likelihoods must have the same outcomes")
+        for observation in range(likelihood_if_class0.size2()):
             joint0 = prior[:, 0] * likelihood_if_class0[:, observation]
             joint1 = prior[:, 1] * likelihood_if_class1[:, observation]
             observation_probability = ca.fmax(eps, joint0 + joint1)
@@ -216,16 +219,26 @@ class NmpcOptimizer:
             obj += acceleration_regularization_weight * normalized_acceleration
 
         nn_full_batch_input = ca.vcat(ca_batch)
-        surrogate_output_ripe = self.l4c_nn[0](nn_full_batch_input)
-        surrogate_output_raw = self.l4c_nn[1](nn_full_batch_input)
+        surrogate_output = self.l4c_nn(nn_full_batch_input)
 
         for i in range(steps):
             start = i * self.num_target_trees
             stop = (i + 1) * self.num_target_trees
+            visibility = surrogate_output[start:stop, 0]
+            accuracy_raw = surrogate_output[start:stop, 1]
+            accuracy_ripe = surrogate_output[start:stop, 2]
+            likelihood_if_ripe = ca.horzcat(
+                1.0 - visibility,
+                visibility * accuracy_ripe,
+                visibility * (1.0 - accuracy_ripe),
+            )
+            likelihood_if_raw = ca.horzcat(
+                1.0 - visibility,
+                visibility * (1.0 - accuracy_raw),
+                visibility * accuracy_raw,
+            )
             expected_entropy = self.expected_posterior_entropy(
-                L0,
-                surrogate_output_ripe[start:stop, :],
-                surrogate_output_raw[start:stop, :],
+                L0, likelihood_if_ripe, likelihood_if_raw
             )
             prior_entropy = self.entropy_target(L0)
             information_gain_by_target += information_discount ** i * ca.fmax(

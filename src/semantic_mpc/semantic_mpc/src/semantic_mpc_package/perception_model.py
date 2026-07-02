@@ -1,13 +1,12 @@
 """PyTorch perception surrogate shared by training and the NMPC runtime."""
 
 import torch
-import torch.nn.functional as F
-
-
 class MultiLayerPerceptron(torch.nn.Module):
     def __init__(self, input_dim=3, hidden_size=64, hidden_layers=3,
-                 output_dim=2, threshold=8.0, gate_slope=10.0):
+                 output_dim=3, threshold=8.0, gate_slope=10.0):
         super().__init__()
+        if output_dim != 3:
+            raise ValueError("structured perception model requires three outputs")
         in_features = input_dim + 1 if input_dim == 3 else input_dim
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
         self.hidden_layers = torch.nn.ModuleList(
@@ -26,4 +25,6 @@ class MultiLayerPerceptron(torch.nn.Module):
         h = torch.tanh(self.input_layer(x))
         for layer in self.hidden_layers:
             h = torch.tanh(layer(h))
-        return F.softmax(self.out_layer(h) * gate.unsqueeze(-1), dim=-1)
+        output = torch.sigmoid(self.out_layer(h))
+        visibility = output[..., :1] * gate.unsqueeze(-1)
+        return torch.cat([visibility, output[..., 1:]], dim=-1)

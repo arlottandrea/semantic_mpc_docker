@@ -48,9 +48,8 @@ COPY mlp_pipeline /workspace/mlp_pipeline
 
 # These links may point at absent build-time paths; Compose mounts the runtime
 # model directories at /models when the container starts.
-RUN mkdir -p /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models \
- && ln -sfn /models/nmpc/ripe /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/ripe \
- && ln -sfn /models/nmpc/raw /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models/raw
+RUN rm -rf /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models \
+ && ln -s /models/nmpc /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models
 
 RUN bash -lc 'source /opt/ros/noetic/setup.bash && cd /workspace && catkin_make -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5'
 
