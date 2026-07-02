@@ -34,6 +34,22 @@ REPORT_METRICS = [
     "time_to_90pct_tracking_s",
     "worst_tree_entropy_final",
 ]
+REPORT_METRIC_LABELS = {
+    "success_rate": "Success rate",
+    "elapsed_time_s": "Elapsed time [s]",
+    "mean_velocity_mps": "Mean velocity [m/s]",
+    "final_entropy": "Final entropy [bits]",
+    "mean_tree_entropy_convergence_time_s": "Mean tree convergence time [s]",
+    "mean_tree_entropy_reduction_rate_bits_s": "Mean tree entropy reduction [bit/s]",
+    "tree_entropy_completion_rate": "Tree completion rate",
+    "mean_controller_compute_time_ms": "Controller compute time [ms]",
+    "entropy_reduction_per_meter": "Entropy reduction per meter [bit/m]",
+    "entropy_reduction_per_second": "Entropy reduction per second [bit/s]",
+    "entropy_reduction_per_compute_ms": "Entropy reduction per compute time [bit/ms]",
+    "time_to_50pct_tracking_s": "Time to 50% tracking [s]",
+    "time_to_90pct_tracking_s": "Time to 90% tracking [s]",
+    "worst_tree_entropy_final": "Worst final tree entropy [bits]",
+}
 HISTORY_METRICS = [
     "step",
     "time_execution_s",
@@ -131,8 +147,8 @@ def _tree_count(summary, config):
         return int(count)
     final_belief = summary.get("final_belief")
     if isinstance(final_belief, (list, tuple)) and final_belief:
-        classes = int(_first_number(config, ("nclasses", "nn_output_dim")))
-        classes = classes if classes > 0 else 1
+        classes_value = _first_number(config, ("nclasses", "nn_output_dim"))
+        classes = int(classes_value) if np.isfinite(classes_value) and classes_value > 0 else 1
         return max(1, int(len(final_belief) / classes))
     initial_entropy = _first_number(summary, ("initial_entropy", "entropy_initial"))
     return int(round(initial_entropy)) if np.isfinite(initial_entropy) and initial_entropy > 0 else np.nan
@@ -623,16 +639,6 @@ def plot_metric_boxplots(runs, output_path):
     columns = 3
     rows = int(math.ceil(len(REPORT_METRICS) / columns))
     fig, axes = plt.subplots(rows, columns, figsize=(16, 4.5 * rows), squeeze=False)
-    labels = {
-        "success_rate": "Success rate",
-        "elapsed_time_s": "Elapsed time [s]",
-        "mean_velocity_mps": "Mean velocity [m/s]",
-        "final_entropy": "Final entropy [bits]",
-        "mean_tree_entropy_convergence_time_s": "Mean tree convergence time [s]",
-        "mean_tree_entropy_reduction_rate_bits_s": "Mean tree entropy reduction [bit/s]",
-        "tree_entropy_completion_rate": "Tree completion rate",
-        "mean_controller_compute_time_ms": "Controller compute time [ms]",
-    }
     for axis, metric in zip(axes.flat, REPORT_METRICS):
         data = (
             runs[["algorithm", metric]].dropna()
@@ -642,7 +648,7 @@ def plot_metric_boxplots(runs, output_path):
         if not data.empty:
             sns.boxplot(data=data, x="algorithm", y=metric, ax=axis, showfliers=False)
             sns.stripplot(data=data, x="algorithm", y=metric, ax=axis, color="black", alpha=0.45, size=3)
-        axis.set_title(labels[metric])
+        axis.set_title(REPORT_METRIC_LABELS[metric])
         axis.set_xlabel("")
         axis.tick_params(axis="x", rotation=30)
     for axis in axes.flat[len(REPORT_METRICS) :]:

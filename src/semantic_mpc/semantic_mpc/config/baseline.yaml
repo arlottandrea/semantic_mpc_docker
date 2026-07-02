@@ -14,7 +14,7 @@ tolerance: 0.2
 waypoint_settle_time: 0.4
 waypoint_hold_publish_period: 0.05
 tree_observation_tolerance: 2.0
-min_velocity: 0.2
+min_velocity: 0.0
 cmd_smoothing_alpha: 0.2
 
 obstacle_goal_ignore_distance: 2.0
@@ -24,7 +24,6 @@ obstacle_radial_gain: 1.75
 obstacle_deviation_gain: 3.5
 
 mpc_steps: 8
-mpc_max_obstacles: 2
 mpc_goal_weight: 8.0
 mpc_heading_weight: 0.2
 mpc_control_weight: 0.05

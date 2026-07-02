@@ -46,6 +46,7 @@ class BaselineExperiment:
         self.metrics = WandbMetrics(mode, run_index, params)
         self.controller_compute_times_ms = []
         self.observation_episode_count = 0
+        self.termination_reason = None
         self.step_generator = None
         if params["step_generator"] == "casadi_mpc":
             self.step_generator = CasadiMpcStepGenerator(params)
@@ -245,12 +246,15 @@ class BaselineExperiment:
                 observation_episode_active=False,
                 command_speed_mps=float(np.linalg.norm(self.prev_cmd[:2])),
             )
+            if self.experiment_budget_exhausted():
+                self.stop_for_experiment_budget(current_pose)
+                return False
 
             distance_to_target = np.linalg.norm(current_pose[:2] - target)
             if distance_to_target <= tolerance:
                 if stop_at_target:
                     self.hold_pose(current_pose)
-                return
+                return True
 
             compute_start = time.perf_counter()
             cmd = self.command_from_goal(current_pose, target, desired_heading, desired_velocity)
@@ -267,6 +271,17 @@ class BaselineExperiment:
             self.ros.publish_pose(next_pose)
             self.metrics.add_distance(np.linalg.norm(cmd[:2] * self.dt))
             self.rate.sleep()
+
+        return False
+
+    def experiment_budget_exhausted(self):
+        return self.metrics.step_count >= self.params["max_experiment_steps"]
+
+    def stop_for_experiment_budget(self, current_pose=None):
+        self.termination_reason = "max_experiment_steps"
+        if current_pose is None:
+            current_pose = self.ros.robot_pose(default=np.zeros(3))
+        self.hold_pose(current_pose)
 
     def apply_waypoint_braking(self, cmd, distance_to_target, tolerance):
         """Limit approach speed so a command cannot carry the robot past a stop waypoint."""
@@ -314,6 +329,10 @@ class BaselineExperiment:
         self.observation_episode_count += 1
         self.observing_tree.set()
         while self.observing_tree.is_set() and not rospy.is_shutdown():
+            if self.experiment_budget_exhausted():
+                self.observing_tree.clear()
+                self.stop_for_experiment_budget()
+                break
             if time.time() - start > self.params["max_observe_time"]:
                 self.observing_tree.clear()
                 break
@@ -401,6 +420,9 @@ class BaselineExperiment:
         """Select and observe one tree at a time, then replan from new belief."""
         visits = 0
         while not rospy.is_shutdown():
+            if self.experiment_budget_exhausted():
+                self.stop_for_experiment_budget()
+                return
             current_pose = self.ros.robot_pose(default=np.zeros(3))
             idx = select_greedy_ig_target(
                 self.tree_positions,
@@ -419,12 +441,16 @@ class BaselineExperiment:
 
             self.active_tree_idx = idx
             tree_pos = self.tree_positions[idx]
-            self.move_to_waypoint(
+            reached = self.move_to_waypoint(
                 tree_pos[0],
                 tree_pos[1],
                 tolerance=self.params["tree_observation_tolerance"],
             )
+            if not reached:
+                return
             self.observe_tree()
+            if self.termination_reason is not None:
+                return
             visits += 1
 
     def run_casadi_mpc(self):
@@ -483,7 +509,7 @@ class BaselineExperiment:
         compute_summary.update(
             {
                 "success": success,
-                "termination_reason": (
+                "termination_reason": self.termination_reason or (
                     "ros_shutdown" if rospy.is_shutdown() else "all_trees_tracked" if success and self.mode != "mower" else "path_complete" if success else "observation_budget_exhausted"
                 ),
                 "total_steps": self.metrics.step_count,
@@ -530,6 +556,7 @@ def load_params():
     if hz <= 0.0:
         hz = 1.0 / max(dt, 1e-6)
 
+    active_obstacle_count = int(_param("active_obstacle_count", 5))
     params = {
         "modes": _param("modes", ["casadi_mpc"]),
         "step_generator": _param("step_generator", "casadi_mpc"),
@@ -574,6 +601,8 @@ def load_params():
         "measurement_period": float(_param("measurement_period", 0.25)),
         "belief_tracking_threshold": float(_param("belief_tracking_threshold", 0.95)),
         "active_target_count": int(_param("active_target_count", 5)),
+        "active_obstacle_count": active_obstacle_count,
+        "max_experiment_steps": int(_param("max_experiment_steps", 1200)),
         "greedy_ig_observation_accuracy": float(_param("greedy_ig_observation_accuracy", 0.9)),
         "mower_offset": float(_param("mower_offset", 2.0)),
         "mower_spacing": float(_param("mower_spacing", 4.0)),
@@ -582,7 +611,7 @@ def load_params():
         "mower_axis": _param("mower_axis", ""),
         "linear_same_row_tol": float(_param("linear_same_row_tol", 0.01)),
         "mpc_steps": int(_param("mpc_steps", 8)),
-        "mpc_max_obstacles": int(_param("mpc_max_obstacles", 8)),
+        "mpc_max_obstacles": active_obstacle_count,
         "mpc_goal_weight": float(_param("mpc_goal_weight", 8.0)),
         "mpc_heading_weight": float(_param("mpc_heading_weight", 0.2)),
         "mpc_control_weight": float(_param("mpc_control_weight", 0.05)),
@@ -621,9 +650,9 @@ def main():
             run_params["algorithm"] = mode
             run_params["run_index"] = run_index
             run_params["termination_criterion"] = (
-                "path_complete"
+                "path_complete_or_max_experiment_steps"
                 if mode == "mower"
-                else "per_tree_entropy_or_observation_timeout"
+                else "all_trees_belief_confidence_threshold_or_max_experiment_steps"
             )
             run_params["run_dir"] = os.path.join(
                 params["run_root"],
