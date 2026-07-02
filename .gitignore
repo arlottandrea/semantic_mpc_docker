@@ -20,3 +20,5 @@ runs/
 # The runtime copy is stored once through Git LFS under models/.
 /src/yolov7-ros/weights/*.pt
 /l4casadi/
+.env.save
+models/rl/
