@@ -141,7 +141,7 @@ class BaselineExperiment:
         elif self.active_tree_idx is not None and self.active_tree_idx < len(scores):
             idx = self.active_tree_idx
             self.lambda_values[idx] = BeliefState.bayes_binary(self.lambda_values[idx], scores[idx])
-            if BeliefState.binary_entropy(np.array([self.lambda_values[idx]])) <= self.params["observation_entropy_threshold"]:
+            if BeliefState.binary_entropy(np.array([self.lambda_values[idx]])) <= self.params["tree_entropy_threshold"]:
                 self.observing_tree.clear()
 
     def calculate_motion_vector(self, current_position, goal_position):
@@ -596,10 +596,10 @@ def load_params():
         "obstacle_tangent_gain": float(_param("obstacle_tangent_gain", 3.25)),
         "obstacle_radial_gain": float(_param("obstacle_radial_gain", 1.75)),
         "obstacle_deviation_gain": float(_param("obstacle_deviation_gain", 3.5)),
-        "observation_entropy_threshold": float(_param("observation_entropy_threshold", 0.025)),
+        "tree_entropy_threshold": float(_param("tree_entropy_threshold", 0.025)),
         "max_observe_time": float(_param("max_observe_time", 30.0)),
         "measurement_period": float(_param("measurement_period", 0.25)),
-        "belief_tracking_threshold": float(_param("belief_tracking_threshold", 0.95)),
+        "belief_tracking_threshold": float(_param("belief_tracking_threshold", 0.9975245006578829)),
         "active_target_count": int(_param("active_target_count", 5)),
         "active_obstacle_count": active_obstacle_count,
         "max_experiment_steps": int(_param("max_experiment_steps", 1200)),
@@ -619,10 +619,11 @@ def load_params():
         "mpc_obstacle_weight": float(_param("mpc_obstacle_weight", 0.25)),
         "mpc_velocity_weight": float(_param("mpc_velocity_weight", 2.0)),
         "mpc_ipopt_max_iter": int(_param("mpc_ipopt_max_iter", 80)),
+        "wandb_enabled": bool(_param("wandb_enabled", False)),
         "wandb_project": _param("wandb_project", "semantic_mpc_baselines"),
         "wandb_entity": _param("wandb_entity", ""),
         "wandb_mode": _param("wandb_mode", "offline"),
-        "wandb_log_period": float(_param("wandb_log_period", 1.0)),
+        "wandb_log_every_steps": int(_param("wandb_log_every_steps", 4)),
     }
 
     if isinstance(params["modes"], str):

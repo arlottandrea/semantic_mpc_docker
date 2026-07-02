@@ -80,7 +80,21 @@ the same deterministically selected field corner. Set `num_runs` for the batch s
 N/E/S/W deterministically from the same trial seed; the reset orientation and mower path
 always use the same sampled heading.
 
-### Batch reports from W&B
+### Batch reports
+
+Local telemetry is the default and does not require W&B:
+
+```bash
+docker compose run --rm --no-deps --entrypoint python baseline \
+  /workspace/scripts/generate_wandb_report.py \
+  --source local \
+  --local-runs-root /runs \
+  --output-dir /runs/reports/latest
+```
+
+Use `--source wandb` only when reports should be downloaded from W&B. Controller-side
+uploads are independently controlled by `wandb_enabled` in `experiment.yaml`; local
+CSV and `run.json` files are written regardless of that flag.
 
 After the runs are synced to W&B, generate CSV, a multi-sheet XLSX workbook, box plots,
 and normalized entropy/velocity profiles with:
@@ -91,6 +105,7 @@ Set `wandb_mode: "online"` in the shared `config/experiment.yaml` when running t
 ```bash
 docker compose run --rm --no-deps --entrypoint python baseline \
   /workspace/scripts/generate_wandb_report.py \
+  --source wandb \
   --project <entity>/semantic_mpc_baselines \
   --project <entity>/active_rl_classification \
   --project <entity>/semantic_mpc \
@@ -126,7 +141,7 @@ filter. When disabled, the bounded policy velocity is sent directly.
 
 The shared evaluation parameters intentionally align the information available to RL and
 NMPC. Both use a 0.25 s control period, the five nearest untracked trees, a 5 m observation
-range, belief confidence 0.95, five active obstacles, a 1200-step budget, and the same velocity, acceleration,
+range, belief confidence 0.9975245 (equivalent to 0.025 bit binary entropy), five active obstacles, a 1200-step budget, and the same velocity, acceleration,
 and 1.5 m obstacle-clearance limits. Padded NMPC target slots have a zero objective mask;
 they are not repeated evidence or repeated cost.
 
@@ -134,7 +149,7 @@ they are not repeated evidence or repeated cost.
 |---|---|---|
 | Active trees | 5 nearest untracked | Same 5, with explicit padding mask |
 | Observation | Updates within 5 m | Same |
-| Completed tree | Maximum belief >= 0.95 | Same |
+| Completed tree | Maximum belief >= 0.9975245 | Same |
 | Bayes | Each new score message once | Same |
 | Attraction | `0.1` progress toward observation range | `0.1` terminal distance excess outside 5 m |
 | Information | Real entropy reduction | Expected information gain over both measurement outcomes |

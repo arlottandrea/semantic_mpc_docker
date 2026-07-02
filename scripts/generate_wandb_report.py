@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download paired experiment runs from W&B and generate batch reports."""
+"""Generate paired experiment reports from local telemetry or W&B."""
 
 import argparse
 import json
@@ -53,6 +53,7 @@ REPORT_METRIC_LABELS = {
 HISTORY_METRICS = [
     "step",
     "time_execution_s",
+    "control_dt_s",
     "distance_m",
     "entropy",
     "pose/x",
@@ -88,6 +89,17 @@ HISTORY_METRICS = [
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--source",
+        choices=("local", "wandb", "export"),
+        default="local",
+        help="Input backend. Local mode never imports or contacts W&B.",
+    )
+    parser.add_argument(
+        "--local-runs-root",
+        default="runs",
+        help="Root scanned recursively for run.json and control_metrics.csv.",
+    )
+    parser.add_argument(
         "--project",
         action="append",
         default=[],
@@ -101,6 +113,35 @@ def parse_args():
     parser.add_argument("--state", default="finished", help="W&B run state filter; empty means all.")
     parser.add_argument("--tag", action="append", default=[], help="Require W&B tag; repeatable.")
     return parser.parse_args()
+
+
+def load_local_runs(root):
+    run_rows = []
+    histories = []
+    for manifest_path in sorted(Path(root).rglob("run.json")):
+        with manifest_path.open() as stream:
+            metadata = json.load(stream)
+        metadata.setdefault("project", "local")
+        metadata.setdefault("run_id", str(manifest_path.parent.relative_to(Path(root))))
+        metadata.setdefault("run_name", manifest_path.parent.name)
+        metadata.setdefault("algorithm", infer_algorithm(metadata["run_name"], metadata.get("config", {}), "local"))
+        metadata.setdefault("run_index", infer_run_index(metadata["run_name"], metadata.get("config", {})))
+        metadata.setdefault("state", "finished")
+        history = _load_local_history(manifest_path.parent)
+        run_rows.append(calculate_run_metrics(metadata, history))
+        if not history.empty:
+            history["run_id"] = metadata["run_id"]
+            history["algorithm"] = metadata["algorithm"]
+            histories.append(history)
+    return pd.DataFrame(run_rows), pd.concat(histories, ignore_index=True) if histories else pd.DataFrame()
+
+
+def _load_local_history(run_dir):
+    path = run_dir / "control_metrics.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    history = pd.read_csv(path)
+    return history.rename(columns={"x": "pose/x", "y": "pose/y", "theta": "pose/theta"})
 
 
 def _safe_number(value):
@@ -177,12 +218,20 @@ def calculate_run_metrics(metadata, history):
     time_values = pd.to_numeric(history.get("time_execution_s", pd.Series(dtype=float)), errors="coerce")
     distance_values = pd.to_numeric(history.get("distance_m", pd.Series(dtype=float)), errors="coerce")
     entropy_values = pd.to_numeric(history.get("entropy", pd.Series(dtype=float)), errors="coerce")
-    positive_periods = time_values.diff()
-    positive_periods = positive_periods[positive_periods > 0].dropna()
-    observed_control_period = float(positive_periods.median()) if not positive_periods.empty else np.nan
+    logging_periods = time_values.diff()
+    logging_periods = logging_periods[logging_periods > 0].dropna()
+    observed_logging_period = float(logging_periods.median()) if not logging_periods.empty else np.nan
+    observed_logging_jitter_p95 = (
+        float(np.percentile(np.abs(logging_periods - observed_logging_period), 95))
+        if not logging_periods.empty
+        else np.nan
+    )
+    control_periods = pd.to_numeric(history.get("control_dt_s", pd.Series(dtype=float)), errors="coerce")
+    control_periods = control_periods[control_periods > 0].dropna()
+    observed_control_period = float(control_periods.median()) if not control_periods.empty else np.nan
     observed_control_jitter_p95 = (
-        float(np.percentile(np.abs(positive_periods - observed_control_period), 95))
-        if not positive_periods.empty
+        float(np.percentile(np.abs(control_periods - observed_control_period), 95))
+        if not control_periods.empty
         else np.nan
     )
     if not np.isfinite(elapsed) and time_values.notna().any():
@@ -274,6 +323,8 @@ def calculate_run_metrics(metadata, history):
         "total_distance_m": total_distance,
         "mean_velocity_mps": mean_velocity,
         "observed_control_period_s": observed_control_period,
+        "observed_logging_period_s": observed_logging_period,
+        "observed_logging_jitter_p95_s": observed_logging_jitter_p95,
         "observed_control_jitter_p95_s": observed_control_jitter_p95,
         "max_velocity_mps": max_velocity,
         "observed_max_velocity_mps": observed_max_velocity,
@@ -518,6 +569,7 @@ def _config_value(row, names):
 def fairness_audit(runs):
     definitions = {
         "observed_control_period_s": (),
+        "observed_logging_period_s": (),
         "control_period_s": ("control_period", "dt", "delta_t"),
         "measurement_period_s": ("measurement_period",),
         "max_velocity_mps": ("max_velocity", "max_linear_velocity"),
@@ -814,14 +866,20 @@ def generate_report(runs, histories, output_dir):
 def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
-    if args.input_dir:
+    if args.source == "local":
+        runs, histories = load_local_runs(args.local_runs_root)
+        if runs.empty:
+            raise SystemExit("No local run.json files found under {}.".format(args.local_runs_root))
+    elif args.source == "export":
+        if not args.input_dir:
+            raise SystemExit("--source export requires --input-dir.")
         input_dir = Path(args.input_dir)
         runs = pd.read_csv(input_dir / "runs.csv")
         history_path = input_dir / "history.csv"
         histories = pd.read_csv(history_path) if history_path.exists() else pd.DataFrame()
     else:
         if not args.project:
-            raise SystemExit("Provide at least one --project or use --input-dir.")
+            raise SystemExit("--source wandb requires at least one --project.")
         runs, histories = download_wandb(args.project, state=args.state, tags=args.tag)
     generate_report(runs, histories, output_dir)
     print("Report written to {}".format(output_dir.resolve()))

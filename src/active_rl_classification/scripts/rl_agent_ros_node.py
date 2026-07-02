@@ -71,7 +71,7 @@ class RLAgentNode:
             rospy.get_param("~observation_range", rospy.get_param("~obs_range", 5.0))
         )
         self.belief_tracking_threshold = float(
-            rospy.get_param("~belief_tracking_threshold", 0.95)
+            rospy.get_param("~belief_tracking_threshold", 0.9975245006578829)
         )
         self.max_experiment_steps = int(rospy.get_param("~max_experiment_steps", 1200))
         self.active_obstacle_count = max(1, int(rospy.get_param("~active_obstacle_count", 5)))
@@ -198,11 +198,12 @@ class RLAgentNode:
         run_name = rospy.get_param("~wandb_name", "") or "rl_agent_run_{:03d}".format(self.run_index)
         run_root = rospy.get_param("~run_dir", "/runs/rl")
         return {
+            "wandb_enabled": bool(rospy.get_param("~wandb_enabled", False)),
             "wandb_project": rospy.get_param("~wandb_project", "active_rl_classification"),
             "wandb_entity": rospy.get_param("~wandb_entity", ""),
             "wandb_mode": rospy.get_param("~wandb_mode", "offline"),
             "wandb_name": run_name,
-            "wandb_log_period": float(rospy.get_param("~wandb_log_period", 1.0)),
+            "wandb_log_every_steps": int(rospy.get_param("~wandb_log_every_steps", 4)),
             "run_dir": os.path.join(run_root, run_name),
             "run_index": self.run_index,
             "trial_seed": self.trial_seed,
@@ -751,12 +752,9 @@ class RLAgentNode:
         return obs, action, info
 
     def _log_step(self, info):
-        if not self.metrics.should_log():
-            return
-
         action = np.asarray(info["action"], dtype=float).flatten()
         policy_action = np.asarray(info["policy_action"], dtype=float).flatten()
-        self.metrics.log(
+        self.metrics.log_control(
             {
                 "time_execution_s": self.metrics.elapsed(),
                 "step": self.steps,

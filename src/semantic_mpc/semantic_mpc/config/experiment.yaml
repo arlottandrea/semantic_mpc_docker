@@ -31,7 +31,8 @@ safe_distance: 1.5
 tree_velocity_radius: 5.0
 tree_entropy_threshold: 0.025
 tree_entropy_start_epsilon: 0.0001
-belief_tracking_threshold: 0.95
+# Binary confidence exactly equivalent to tree_entropy_threshold=0.025 bit.
+belief_tracking_threshold: 0.9975245006578829
 observation_range: 5.0
 active_target_count: 5
 active_obstacle_count: 5
@@ -41,6 +42,9 @@ max_experiment_steps: 1200
 # Disable to execute the bounded policy velocity directly.
 rl_command_filter_enabled: true
 
-# Use "online" with WANDB_API_KEY configured, or sync offline runs before reporting.
+# Local metrics are always written. Enable W&B explicitly when required.
+wandb_enabled: false
 wandb_mode: "online"
-wandb_log_period: 0.25
+# High-rate control telemetry is kept in control_metrics.csv. W&B receives
+# one aggregate for this many controller steps.
+wandb_log_every_steps: 4

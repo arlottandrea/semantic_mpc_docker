@@ -1,3 +1,5 @@
+import csv
+import json
 import os
 import time
 
@@ -199,8 +201,15 @@ class RosWandbLogger:
         self.params = params or {}
         self.start_time = None
         self.last_log_time = 0.0
+        self.last_control_time = None
+        self.control_log_buffer = []
         self.run = None
         self.wandb = None
+        run_dir = self.params.get("run_dir")
+        if run_dir:
+            os.makedirs(run_dir, exist_ok=True)
+        if not bool(self.params.get("wandb_enabled", False)):
+            return
 
         try:
             import wandb
@@ -212,9 +221,6 @@ class RosWandbLogger:
         project = self.params.get("wandb_project", default_project)
         entity = self.params.get("wandb_entity") or None
         name = self.params.get("wandb_name") or "{}_run_{:03d}".format(mode, run_index)
-        run_dir = self.params.get("run_dir")
-        if run_dir:
-            os.makedirs(run_dir, exist_ok=True)
         self.run = wandb.init(
             project=project,
             entity=entity,
@@ -228,6 +234,8 @@ class RosWandbLogger:
     def start(self):
         self.start_time = time.time()
         self.last_log_time = 0.0
+        self.last_control_time = None
+        self.control_log_buffer = []
 
     def elapsed(self):
         if self.start_time is None:
@@ -238,6 +246,29 @@ class RosWandbLogger:
         if self.run is not None:
             self.wandb.log(values)
 
+    def log_control(self, values):
+        """Persist every control sample locally and upload step aggregates."""
+        values = dict(values)
+        now = self.elapsed()
+        values["control_dt_s"] = np.nan if self.last_control_time is None else max(0.0, now - self.last_control_time)
+        self.last_control_time = now
+        run_dir = self.params.get("run_dir")
+        if run_dir:
+            path = os.path.join(run_dir, "control_metrics.csv")
+            write_header = not os.path.exists(path)
+            with open(path, "a", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(values))
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(values)
+        if self.run is None:
+            return
+        self.control_log_buffer.append(values)
+        log_every = max(1, int(self.params.get("wandb_log_every_steps", 4)))
+        if len(self.control_log_buffer) >= log_every:
+            self.wandb.log(WandbMetrics._aggregate_wandb_payloads(self.control_log_buffer))
+            self.control_log_buffer = []
+
     def should_log(self, force=False):
         t = self.elapsed()
         if not force and t - self.last_log_time < self.params.get("wandb_log_period", 1.0):
@@ -247,18 +278,38 @@ class RosWandbLogger:
 
     def finish(self, summary=None):
         summary = summary or {}
+        self.write_local_run(summary)
         if self.run is not None:
+            if self.control_log_buffer:
+                self.wandb.log(WandbMetrics._aggregate_wandb_payloads(self.control_log_buffer))
+                self.control_log_buffer = []
             if summary:
                 self.run.summary.update(summary)
             self.run.finish()
         return summary
+
+    def write_local_run(self, summary):
+        run_dir = self.params.get("run_dir")
+        if not run_dir:
+            return
+        os.makedirs(run_dir, exist_ok=True)
+        payload = {
+            "run_id": self.params.get("wandb_name") or "{}_run_{:03d}".format(self.mode, self.run_index),
+            "run_name": self.params.get("wandb_name") or "{}_run_{:03d}".format(self.mode, self.run_index),
+            "algorithm": self.mode,
+            "run_index": self.run_index,
+            "state": "finished",
+            "config": self.params,
+            "summary": summary,
+        }
+        with open(os.path.join(run_dir, "run.json"), "w") as stream:
+            json.dump(payload, stream, indent=2, default=_json_default)
 
 
 class WandbMetrics(RosWandbLogger):
     def __init__(self, mode, run_index=0, params=None):
         super(WandbMetrics, self).__init__(mode, run_index, params, default_project="semantic_mpc")
         self.total_distance = 0.0
-        self.rows = []
         self.velocity_metrics = VelocityTreeMetrics(
             self.params.get("max_velocity", 0.0),
             self.params.get("tree_velocity_radius", 5.0),
@@ -273,6 +324,17 @@ class WandbMetrics(RosWandbLogger):
         self.unresolved_tree_auc = 0.0
         self.last_tracking_time = None
         self.last_unresolved_count = None
+        self.last_control_time = None
+        self.wandb_buffer = []
+        self.local_metrics_path = None
+        run_dir = self.params.get("run_dir")
+        if run_dir:
+            os.makedirs(run_dir, exist_ok=True)
+            self.local_metrics_path = os.path.join(run_dir, "control_metrics.csv")
+            with open(self.local_metrics_path, "w", newline="") as stream:
+                csv.writer(stream).writerow(
+                    ["step", "time_execution_s", "control_dt_s", "x", "y", "theta", "entropy", "distance_m", "speed_mps"]
+                )
 
     def add_distance(self, distance):
         self.total_distance += float(distance)
@@ -294,6 +356,8 @@ class WandbMetrics(RosWandbLogger):
         extra=None,
     ):
         t = self.elapsed()
+        control_dt_s = np.nan if self.last_control_time is None else max(0.0, t - self.last_control_time)
+        self.last_control_time = t
         x, y, theta = [float(v) for v in np.asarray(pose).flatten()[:3]]
         entropy = float(entropy)
         velocity = self.velocity_metrics.update(t, pose, tree_positions=tree_positions)
@@ -320,28 +384,18 @@ class WandbMetrics(RosWandbLogger):
                 if not np.isfinite(self.tracking_milestones[milestone]) and fraction >= milestone:
                     self.tracking_milestones[milestone] = t
         self.step_count = int(step) if step is not None else self.step_count + 1
-        self.rows.append(
-            [
-                t,
-                x,
-                y,
-                theta,
-                entropy,
-                self.total_distance,
-                velocity["speed_mps"],
-                velocity["nearest_tree_id"],
-                velocity["nearest_tree_distance_m"],
-                velocity["velocity_reduction_mps"],
-            ]
-        )
+        if self.local_metrics_path:
+            with open(self.local_metrics_path, "a", newline="") as stream:
+                csv.writer(stream).writerow(
+                    [self.step_count, t, control_dt_s, x, y, theta, entropy, self.total_distance, velocity["speed_mps"]]
+                )
 
         if self.run is None:
-            return
-        if not self.should_log(force=force):
             return
         payload = {
             "step": self.step_count,
             "time_execution_s": t,
+            "control_dt_s": control_dt_s,
             "distance_m": self.total_distance,
             "entropy": entropy,
             "pose/x": x,
@@ -364,7 +418,32 @@ class WandbMetrics(RosWandbLogger):
             payload["unresolved_tree_count"] = total_targets - num_tracked
         if extra:
             payload.update(extra)
-        self.wandb.log(payload)
+        self.wandb_buffer.append(payload)
+        log_every = max(1, int(self.params.get("wandb_log_every_steps", 4)))
+        if not force and len(self.wandb_buffer) < log_every:
+            return
+        self.wandb.log(self._aggregate_wandb_payloads(self.wandb_buffer))
+        self.wandb_buffer = []
+
+    @staticmethod
+    def _aggregate_wandb_payloads(payloads):
+        """Keep the latest state while averaging high-rate diagnostics."""
+        result = dict(payloads[-1])
+        mean_keys = {
+            "control_dt_s",
+            "speed_mps",
+            "velocity_reduction_mps",
+            "command/speed_mps",
+            "controller_compute_time_ms",
+            "measurement_age_s",
+        }
+        for key in mean_keys:
+            values = [float(row[key]) for row in payloads if key in row and np.isfinite(float(row[key]))]
+            if values:
+                result[key] = float(np.mean(values))
+        result["new_targets_tracked"] = int(sum(int(row.get("new_targets_tracked", 0)) for row in payloads))
+        result["wandb_aggregated_steps"] = len(payloads)
+        return result
 
     def finish(self, initial_entropy, final_entropy, final_belief=None, extra=None):
         total_time = self.elapsed()
@@ -393,23 +472,13 @@ class WandbMetrics(RosWandbLogger):
         if extra:
             summary.update(extra)
 
+        self.write_local_run(summary)
+
         if self.run is not None:
-            table = self.wandb.Table(
-                columns=[
-                    "time",
-                    "x",
-                    "y",
-                    "theta",
-                    "entropy",
-                    "distance",
-                    "speed_mps",
-                    "nearest_tree_id",
-                    "nearest_tree_distance_m",
-                    "velocity_reduction_mps",
-                ],
-                data=self.rows,
-            )
-            self.wandb.log({"trajectory": table, **summary})
+            if self.wandb_buffer:
+                self.wandb.log(self._aggregate_wandb_payloads(self.wandb_buffer))
+                self.wandb_buffer = []
+            self.wandb.log(summary)
             self.run.summary.update(summary)
             if final_belief is not None:
                 self.run.summary["final_belief"] = np.asarray(final_belief, dtype=float).flatten().tolist()
@@ -426,3 +495,11 @@ def _finite_extra(extra, key):
     except (TypeError, ValueError):
         return np.nan
     return value if np.isfinite(value) else np.nan
+
+
+def _json_default(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError("Object of type {} is not JSON serializable".format(type(value).__name__))
