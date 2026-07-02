@@ -4,9 +4,13 @@ interface (live matplotlib window) or record to video (mp4 / gif).
 """
 
 import argparse
+import io
+import zipfile
 
+import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
+import torch as th
 from matplotlib.patches import Rectangle, Circle, FancyArrow
 from matplotlib.lines import Line2D
 from matplotlib import animation
@@ -14,12 +18,62 @@ from matplotlib import animation
 from stable_baselines3 import PPO
 
 from active_rl_classification.env import TreeClassificationEnv, DIM_TARGET
+from active_rl_classification.model import TreeClassFeatureExtractor
 from tqdm import tqdm
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
 CLASS_COLORS = {0: "green", 1: "red"}
 CLASS_LABELS = {0: "not-ripe", 1: "ripe"}
+
+
+def _load_model(model_path, env, device="auto"):
+    """Load an SB3 model, tolerating NumPy 2 metadata under NumPy 1."""
+    try:
+        return PPO.load(model_path, device=device)
+    except ModuleNotFoundError as exc:
+        if not (exc.name or "").startswith("numpy._core"):
+            raise
+        print(
+            "Model metadata requires NumPy 2; loading policy weights "
+            "directly with the current NumPy version."
+        )
+
+    class DummyEnv(gym.Env):
+        metadata = {}
+
+        def __init__(self):
+            super().__init__()
+            self.observation_space = env.observation_space
+            self.action_space = env.action_space
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return self.observation_space.sample(), {}
+
+        def step(self, action):
+            return self.observation_space.sample(), 0.0, False, False, {}
+
+    policy_kwargs = dict(
+        features_extractor_class=TreeClassFeatureExtractor,
+        features_extractor_kwargs=dict(features_dim=128),
+        share_features_extractor=False,
+        net_arch=dict(pi=[], vf=[]),
+    )
+    model = PPO(
+        "MultiInputPolicy",
+        DummyEnv(),
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+        device=device,
+    )
+    map_location = "cpu" if device == "auto" else device
+    with zipfile.ZipFile(model_path, "r") as archive:
+        policy_bytes = archive.read("policy.pth")
+    state_dict = th.load(io.BytesIO(policy_bytes), map_location=map_location)
+    model.policy.load_state_dict(state_dict)
+    model.policy.eval()
+    return model
 
 
 def parse_args():
@@ -163,7 +217,7 @@ def main():
     })
     env.reset(seed=args.seed)
 
-    model = PPO.load(args.model, device="auto")
+    model = _load_model(args.model, env, device="auto")
 
     all_frames = []  # list of (episode_idx, snapshot, cum_reward)
     print(f"Collecting rollouts for {args.episodes} episode(s)...")
@@ -173,7 +227,8 @@ def main():
             f"episode {ep}: len={info['episode_length']} "
             f"tracked={info['num_tracked']} success={info['success']}"
         )
-        all_frames.extend([(ep, snap, cum_r) for snap, cum_r in frames])
+        if ep == args.episodes-1:
+            all_frames.extend([(ep, snap, cum_r) for snap, cum_r in frames])
 
     fig, ax = plt.subplots(figsize=(15, 15))
 

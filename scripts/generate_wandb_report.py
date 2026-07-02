@@ -27,8 +27,15 @@ REPORT_METRICS = [
     "mean_tree_entropy_reduction_rate_bits_s",
     "tree_entropy_completion_rate",
     "mean_controller_compute_time_ms",
+    "entropy_reduction_per_meter",
+    "entropy_reduction_per_second",
+    "entropy_reduction_per_compute_ms",
+    "time_to_50pct_tracking_s",
+    "time_to_90pct_tracking_s",
+    "worst_tree_entropy_final",
 ]
 HISTORY_METRICS = [
+    "step",
     "time_execution_s",
     "distance_m",
     "entropy",
@@ -50,6 +57,15 @@ HISTORY_METRICS = [
     "rl_liveness_recovery_active",
     "rl_liveness_recovery_count",
     "measurement_age_s",
+    "num_tracked",
+    "new_targets_tracked",
+    "total_targets",
+    "selected_target_id",
+    "active_target_count_current",
+    "observation_episode_active",
+    "worst_tree_entropy",
+    "unresolved_tree_count",
+    "mpc_warm_start_reused",
 ]
 
 
@@ -92,7 +108,7 @@ def infer_algorithm(name, config, project=""):
     if explicit:
         return str(explicit).lower()
     lowered = "{} {}".format(project, name).lower()
-    for candidate in ("casadi_mpc", "mower", "linear", "greedy", "nmpc", "rl_agent", "rl"):
+    for candidate in ("casadi_mpc", "greedy_ig", "mower", "linear", "greedy", "nmpc", "rl_agent", "rl"):
         if candidate in lowered:
             return "active_rl" if candidate in ("rl", "rl_agent") else candidate
     return "unknown"
@@ -148,6 +164,11 @@ def calculate_run_metrics(metadata, history):
     positive_periods = time_values.diff()
     positive_periods = positive_periods[positive_periods > 0].dropna()
     observed_control_period = float(positive_periods.median()) if not positive_periods.empty else np.nan
+    observed_control_jitter_p95 = (
+        float(np.percentile(np.abs(positive_periods - observed_control_period), 95))
+        if not positive_periods.empty
+        else np.nan
+    )
     if not np.isfinite(elapsed) and time_values.notna().any():
         elapsed = float(time_values.max())
     if {"pose/x", "pose/y"}.issubset(history.columns):
@@ -175,6 +196,16 @@ def calculate_run_metrics(metadata, history):
         if np.isfinite(entropy_reduction) and np.isfinite(tree_count) and tree_count > 0
         else np.nan
     )
+    entropy_per_meter = (
+        entropy_reduction / total_distance
+        if np.isfinite(entropy_reduction) and np.isfinite(total_distance) and total_distance > 0
+        else _first_number(summary, ("entropy_reduction_per_meter",))
+    )
+    entropy_per_second = (
+        entropy_reduction / elapsed
+        if np.isfinite(entropy_reduction) and np.isfinite(elapsed) and elapsed > 0
+        else _first_number(summary, ("entropy_reduction_per_second",))
+    )
     max_velocity = _max_velocity(config)
     velocity_headroom = (
         max(0.0, max_velocity - mean_velocity)
@@ -182,7 +213,7 @@ def calculate_run_metrics(metadata, history):
         else np.nan
     )
     per_tree_velocity_reduction = _first_number(
-        summary, ("mean_velocity_reduction_per_tree_mps", "avg_velocity_reduction_per_tree_mps")
+        summary, ("mean_nearest_tree_speed_reduction_mps", "mean_velocity_reduction_per_tree_mps", "avg_velocity_reduction_per_tree_mps")
     )
     observed_max_velocity = _safe_number(
         pd.to_numeric(history.get("speed_mps", pd.Series(dtype=float)), errors="coerce").max()
@@ -198,6 +229,20 @@ def calculate_run_metrics(metadata, history):
     tree_records = summary.get("tree_entropy_records", [])
     if not isinstance(tree_records, list):
         tree_records = []
+    milestone_times = {}
+    if {"time_execution_s", "num_tracked", "total_targets"}.issubset(history.columns):
+        tracked_frame = history[["time_execution_s", "num_tracked", "total_targets"]].apply(
+            pd.to_numeric, errors="coerce"
+        ).dropna()
+        fraction = tracked_frame["num_tracked"] / tracked_frame["total_targets"].replace(0, np.nan)
+        for milestone in (0.5, 0.9):
+            reached = tracked_frame.loc[fraction >= milestone, "time_execution_s"]
+            milestone_times[milestone] = float(reached.iloc[0]) if not reached.empty else np.nan
+    mean_compute = _first_number(summary, ("mean_controller_compute_time_ms",))
+    total_steps = _first_number(summary, ("total_steps", "total_commands"))
+    entropy_per_compute = _first_number(summary, ("entropy_reduction_per_compute_ms",))
+    if not np.isfinite(entropy_per_compute) and np.isfinite(mean_compute) and np.isfinite(total_steps) and mean_compute * total_steps > 0:
+        entropy_per_compute = entropy_reduction / (mean_compute * total_steps)
 
     return {
         "run_id": metadata["run_id"],
@@ -213,17 +258,28 @@ def calculate_run_metrics(metadata, history):
         "total_distance_m": total_distance,
         "mean_velocity_mps": mean_velocity,
         "observed_control_period_s": observed_control_period,
+        "observed_control_jitter_p95_s": observed_control_jitter_p95,
         "max_velocity_mps": max_velocity,
         "observed_max_velocity_mps": observed_max_velocity,
         "observed_max_acceleration_mps2": observed_max_acceleration,
         "observed_min_obstacle_clearance_m": observed_min_clearance,
         "mean_velocity_headroom_mps": velocity_headroom,
-        "mean_velocity_reduction_per_tree_mps": per_tree_velocity_reduction,
+        "mean_nearest_tree_speed_reduction_mps": per_tree_velocity_reduction,
         "initial_entropy": initial_entropy,
         "final_entropy": final_entropy,
         "entropy_reduction": entropy_reduction,
         "tree_count": tree_count,
         "entropy_reduction_per_tree": entropy_per_tree,
+        "entropy_reduction_per_meter": entropy_per_meter,
+        "entropy_reduction_per_second": entropy_per_second,
+        "entropy_reduction_per_observation_episode": _first_number(summary, ("entropy_reduction_per_observation_episode",)),
+        "entropy_reduction_per_compute_ms": entropy_per_compute,
+        "time_to_50pct_tracking_s": _first_number(summary, ("time_to_50pct_tracking_s",)) if np.isfinite(_first_number(summary, ("time_to_50pct_tracking_s",))) else milestone_times.get(0.5, np.nan),
+        "time_to_90pct_tracking_s": _first_number(summary, ("time_to_90pct_tracking_s",)) if np.isfinite(_first_number(summary, ("time_to_90pct_tracking_s",))) else milestone_times.get(0.9, np.nan),
+        "worst_tree_entropy_final": _first_number(summary, ("worst_tree_entropy_final",)),
+        "p90_tree_entropy_final": _first_number(summary, ("p90_tree_entropy_final",)),
+        "p95_tree_entropy_final": _first_number(summary, ("p95_tree_entropy_final",)),
+        "unresolved_tree_count_auc_tree_s": _first_number(summary, ("unresolved_tree_count_auc_tree_s",)),
         "mean_tree_entropy_convergence_time_s": _first_number(
             summary, ("mean_tree_entropy_convergence_time_s",)
         ),
@@ -369,7 +425,7 @@ def summarize_runs(runs):
     rows = []
     for algorithm, group in runs.groupby("algorithm", dropna=False):
         for metric in REPORT_METRICS + [
-            "mean_velocity_reduction_per_tree_mps",
+            "mean_nearest_tree_speed_reduction_mps",
             "rl_liveness_recovery_count",
         ]:
             values = pd.to_numeric(
@@ -673,7 +729,7 @@ def write_excel(path, runs, tree_metrics, summary, comparisons, fairness, pairin
 
 def write_readme(path, runs, tree_metrics, fairness, pairing):
     failed = fairness.loc[fairness["status"] == "FAIL", "constraint"].drop_duplicates().tolist()
-    missing_tree_velocity = int(runs["mean_velocity_reduction_per_tree_mps"].isna().sum())
+    missing_tree_velocity = int(runs["mean_nearest_tree_speed_reduction_mps"].isna().sum())
     failed_pairs = int((pairing["status"] == "FAIL").sum()) if not pairing.empty else len(runs)
     text = [
         "# Batch experiment report",
@@ -694,7 +750,7 @@ def write_readme(path, runs, tree_metrics, fairness, pairing):
         ),
         "Controller compute time is measured locally with a monotonic high-resolution clock and excludes the control-loop sleep.",
         "",
-        "`mean_velocity_reduction_per_tree_mps` is unavailable for {}/{} runs. Existing logs do not associate trajectory samples with tree IDs; no proxy was fabricated. `entropy_reduction_per_tree` is reported separately.".format(
+        "`mean_nearest_tree_speed_reduction_mps` is unavailable for {}/{} runs. It is a nearest-tree slowdown diagnostic, not an information-quality metric; `entropy_reduction_per_meter` and `entropy_reduction_per_second` are the primary efficiency metrics.".format(
             missing_tree_velocity, len(runs)
         ),
     ]

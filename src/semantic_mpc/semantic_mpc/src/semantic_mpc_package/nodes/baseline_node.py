@@ -13,6 +13,7 @@ from semantic_mpc_package.baselines import (
     generate_linear_order,
     generate_mower_path,
     resolve_mower_heading,
+    select_greedy_ig_target,
 )
 from semantic_mpc_package.experiment_metrics import WandbMetrics
 from semantic_mpc_package.ros_experiment import (
@@ -44,6 +45,7 @@ class BaselineExperiment:
         self.rate = rospy.Rate(max(1, int(round(params["hz"]))))
         self.metrics = WandbMetrics(mode, run_index, params)
         self.controller_compute_times_ms = []
+        self.observation_episode_count = 0
         self.step_generator = None
         if params["step_generator"] == "casadi_mpc":
             self.step_generator = CasadiMpcStepGenerator(params)
@@ -237,6 +239,11 @@ class BaselineExperiment:
                 entropy,
                 belief=self.lambda_values,
                 tree_positions=self.tree_positions,
+                controller_compute_time_ms=(self.controller_compute_times_ms[-1] if self.controller_compute_times_ms else np.nan),
+                selected_target_id=self.active_tree_idx,
+                active_target_count_current=self._active_target_count(),
+                observation_episode_active=False,
+                command_speed_mps=float(np.linalg.norm(self.prev_cmd[:2])),
             )
 
             distance_to_target = np.linalg.norm(current_pose[:2] - target)
@@ -304,6 +311,7 @@ class BaselineExperiment:
         start = time.time()
 
         self.last_score_sequence = self.ros.tree_scores_sequence
+        self.observation_episode_count += 1
         self.observing_tree.set()
         while self.observing_tree.is_set() and not rospy.is_shutdown():
             if time.time() - start > self.params["max_observe_time"]:
@@ -319,6 +327,11 @@ class BaselineExperiment:
                 entropy,
                 belief=self.lambda_values,
                 tree_positions=self.tree_positions,
+                controller_compute_time_ms=(self.controller_compute_times_ms[-1] if self.controller_compute_times_ms else np.nan),
+                selected_target_id=self.active_tree_idx,
+                active_target_count_current=self._active_target_count(),
+                observation_episode_active=True,
+                command_speed_mps=float(np.linalg.norm(self.prev_cmd[:2])),
             )
 
             compute_start = time.perf_counter()
@@ -337,6 +350,13 @@ class BaselineExperiment:
             self.rate.sleep()
 
         self.prev_cmd = np.zeros(3)
+
+    def _active_target_count(self):
+        if self.mode == "mower":
+            return 0
+        confidence = np.maximum(self.lambda_values, 1.0 - self.lambda_values)
+        untracked = int(np.sum(confidence < self.params["belief_tracking_threshold"]))
+        return min(untracked, self.params["active_target_count"])
 
     def run_mower(self):
         current_pose = self.ros.robot_pose(default=np.zeros(3))
@@ -377,6 +397,36 @@ class BaselineExperiment:
         rospy.loginfo("Greedy baseline generated %d tree visits.", len(order))
         self.visit_trees(order)
 
+    def run_greedy_ig(self):
+        """Select and observe one tree at a time, then replan from new belief."""
+        visits = 0
+        while not rospy.is_shutdown():
+            current_pose = self.ros.robot_pose(default=np.zeros(3))
+            idx = select_greedy_ig_target(
+                self.tree_positions,
+                current_pose,
+                self.lambda_values,
+                self.params["active_target_count"],
+                self.params["belief_tracking_threshold"],
+                self.params["greedy_ig_observation_accuracy"],
+            )
+            if idx is None:
+                rospy.loginfo(
+                    "Greedy-IG finished after %d receding tree selections; all trees are tracked.",
+                    visits,
+                )
+                return
+
+            self.active_tree_idx = idx
+            tree_pos = self.tree_positions[idx]
+            self.move_to_waypoint(
+                tree_pos[0],
+                tree_pos[1],
+                tolerance=self.params["tree_observation_tolerance"],
+            )
+            self.observe_tree()
+            visits += 1
+
     def run_casadi_mpc(self):
         order = generate_greedy_order(self.tree_positions, self.ros.robot_pose(default=np.zeros(3)), self.lambda_values)
         rospy.loginfo("CasADi MPC baseline generated %d tree visits.", len(order))
@@ -403,6 +453,8 @@ class BaselineExperiment:
             self.run_linear()
         elif self.mode == "greedy":
             self.run_greedy()
+        elif self.mode == "greedy_ig":
+            self.run_greedy_ig()
         elif self.mode == "casadi_mpc":
             if self.params["step_generator"] != "casadi_mpc":
                 rospy.logwarn("mode=casadi_mpc overrides step_generator=%s.", self.params["step_generator"])
@@ -417,7 +469,28 @@ class BaselineExperiment:
             "mean_controller_compute_time_ms": float(np.mean(compute_times)) if compute_times.size else np.nan,
             "median_controller_compute_time_ms": float(np.median(compute_times)) if compute_times.size else np.nan,
             "p95_controller_compute_time_ms": float(np.percentile(compute_times, 95)) if compute_times.size else np.nan,
+            "total_controller_compute_time_ms": float(np.sum(compute_times)) if compute_times.size else 0.0,
+            "observation_episode_count": self.observation_episode_count,
+            "entropy_reduction_per_observation_episode": (
+                float((self.initial_entropy - final_entropy) / self.observation_episode_count)
+                if self.observation_episode_count
+                else np.nan
+            ),
         }
+        confidence = np.maximum(self.lambda_values, 1.0 - self.lambda_values)
+        num_tracked = int(np.sum(confidence >= self.params["belief_tracking_threshold"]))
+        success = bool(num_tracked == len(self.lambda_values)) if self.mode != "mower" else not rospy.is_shutdown()
+        compute_summary.update(
+            {
+                "success": success,
+                "termination_reason": (
+                    "ros_shutdown" if rospy.is_shutdown() else "all_trees_tracked" if success and self.mode != "mower" else "path_complete" if success else "observation_budget_exhausted"
+                ),
+                "total_steps": self.metrics.step_count,
+                "num_tracked_final": num_tracked,
+                "total_targets": len(self.lambda_values),
+            }
+        )
         summary = self.metrics.finish(
             self.initial_entropy,
             final_entropy,
@@ -499,6 +572,9 @@ def load_params():
         "observation_entropy_threshold": float(_param("observation_entropy_threshold", 0.025)),
         "max_observe_time": float(_param("max_observe_time", 30.0)),
         "measurement_period": float(_param("measurement_period", 0.25)),
+        "belief_tracking_threshold": float(_param("belief_tracking_threshold", 0.95)),
+        "active_target_count": int(_param("active_target_count", 5)),
+        "greedy_ig_observation_accuracy": float(_param("greedy_ig_observation_accuracy", 0.9)),
         "mower_offset": float(_param("mower_offset", 2.0)),
         "mower_spacing": float(_param("mower_spacing", 4.0)),
         "mower_heading": _param("mower_heading", "N"),

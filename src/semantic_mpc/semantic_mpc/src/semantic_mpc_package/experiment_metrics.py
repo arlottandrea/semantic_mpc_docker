@@ -55,8 +55,11 @@ class VelocityTreeMetrics:
             for tree_id, duration in self.duration.items()
             if duration > 0.0
         ]
+        value = float(np.mean(per_tree)) if per_tree else np.nan
         return {
-            "mean_velocity_reduction_per_tree_mps": float(np.mean(per_tree)) if per_tree else np.nan,
+            "mean_nearest_tree_speed_reduction_mps": value,
+            # Compatibility alias for previously exported runs.
+            "mean_velocity_reduction_per_tree_mps": value,
             "velocity_reduction_tree_count": len(per_tree),
         }
 
@@ -264,17 +267,59 @@ class WandbMetrics(RosWandbLogger):
             self.params.get("tree_entropy_threshold", 0.025),
             self.params.get("tree_entropy_start_epsilon", 1e-4),
         )
+        self.step_count = 0
+        self.last_num_tracked = 0
+        self.tracking_milestones = {0.5: np.nan, 0.9: np.nan}
+        self.unresolved_tree_auc = 0.0
+        self.last_tracking_time = None
+        self.last_unresolved_count = None
 
     def add_distance(self, distance):
         self.total_distance += float(distance)
 
-    def log_pose(self, pose, entropy, belief=None, force=False, tree_positions=None):
+    def log_pose(
+        self,
+        pose,
+        entropy,
+        belief=None,
+        force=False,
+        tree_positions=None,
+        step=None,
+        controller_compute_time_ms=np.nan,
+        measurement_age_s=np.nan,
+        selected_target_id=None,
+        active_target_count_current=0,
+        observation_episode_active=False,
+        command_speed_mps=np.nan,
+        extra=None,
+    ):
         t = self.elapsed()
         x, y, theta = [float(v) for v in np.asarray(pose).flatten()[:3]]
         entropy = float(entropy)
         velocity = self.velocity_metrics.update(t, pose, tree_positions=tree_positions)
+        num_tracked = 0
+        total_targets = len(tree_positions) if tree_positions is not None else 0
+        new_targets_tracked = 0
+        tree_entropies = np.array([], dtype=float)
         if belief is not None:
-            self.entropy_metrics.update(t, belief)
+            tree_entropies = self.entropy_metrics.update(t, belief)
+            values = np.asarray(belief, dtype=float)
+            threshold = float(self.params.get("belief_tracking_threshold", 0.95))
+            confidence = np.maximum(values, 1.0 - values) if values.ndim == 1 else np.max(values, axis=1)
+            num_tracked = int(np.sum(confidence >= threshold))
+            total_targets = len(confidence)
+            new_targets_tracked = max(0, num_tracked - self.last_num_tracked)
+            unresolved = total_targets - num_tracked
+            if self.last_tracking_time is not None:
+                self.unresolved_tree_auc += self.last_unresolved_count * max(0.0, t - self.last_tracking_time)
+            self.last_tracking_time = t
+            self.last_unresolved_count = unresolved
+            self.last_num_tracked = num_tracked
+            fraction = float(num_tracked) / total_targets if total_targets else 0.0
+            for milestone in self.tracking_milestones:
+                if not np.isfinite(self.tracking_milestones[milestone]) and fraction >= milestone:
+                    self.tracking_milestones[milestone] = t
+        self.step_count = int(step) if step is not None else self.step_count + 1
         self.rows.append(
             [
                 t,
@@ -295,6 +340,7 @@ class WandbMetrics(RosWandbLogger):
         if not self.should_log(force=force):
             return
         payload = {
+            "step": self.step_count,
             "time_execution_s": t,
             "distance_m": self.total_distance,
             "entropy": entropy,
@@ -302,20 +348,44 @@ class WandbMetrics(RosWandbLogger):
             "pose/y": y,
             "pose/theta": theta,
             **velocity,
+            "num_tracked": num_tracked,
+            "new_targets_tracked": new_targets_tracked,
+            "total_targets": total_targets,
+            "command/speed_mps": float(command_speed_mps),
+            "controller_compute_time_ms": float(controller_compute_time_ms),
+            "measurement_age_s": float(measurement_age_s),
+            "selected_target_id": -1 if selected_target_id is None else int(selected_target_id),
+            "active_target_count_current": int(active_target_count_current),
+            "observation_episode_active": bool(observation_episode_active),
         }
         if belief is not None:
             payload["belief_mean"] = float(np.mean(np.asarray(belief, dtype=float)))
+            payload["worst_tree_entropy"] = float(np.max(tree_entropies)) if tree_entropies.size else np.nan
+            payload["unresolved_tree_count"] = total_targets - num_tracked
+        if extra:
+            payload.update(extra)
         self.wandb.log(payload)
 
     def finish(self, initial_entropy, final_entropy, final_belief=None, extra=None):
         total_time = self.elapsed()
         entropy_reduction = float(initial_entropy - final_entropy)
+        final_tree_entropy = self.entropy_metrics.entropies(final_belief) if final_belief is not None else np.array([])
+        compute_ms = _finite_extra(extra, "total_controller_compute_time_ms")
         summary = {
             "total_time_execution_s": float(total_time),
             "total_distance_m": float(self.total_distance),
             "initial_entropy": float(initial_entropy),
             "final_entropy": float(final_entropy),
             "entropy_reduction": entropy_reduction,
+            "entropy_reduction_per_meter": entropy_reduction / self.total_distance if self.total_distance > 0.0 else np.nan,
+            "entropy_reduction_per_second": entropy_reduction / total_time if total_time > 0.0 else np.nan,
+            "entropy_reduction_per_compute_ms": entropy_reduction / compute_ms if compute_ms > 0.0 else np.nan,
+            "time_to_50pct_tracking_s": self.tracking_milestones[0.5],
+            "time_to_90pct_tracking_s": self.tracking_milestones[0.9],
+            "unresolved_tree_count_auc_tree_s": float(self.unresolved_tree_auc),
+            "worst_tree_entropy_final": float(np.max(final_tree_entropy)) if final_tree_entropy.size else np.nan,
+            "p90_tree_entropy_final": float(np.percentile(final_tree_entropy, 90)) if final_tree_entropy.size else np.nan,
+            "p95_tree_entropy_final": float(np.percentile(final_tree_entropy, 95)) if final_tree_entropy.size else np.nan,
             "mean_velocity_mps": float(self.total_distance / total_time) if total_time > 0.0 else 0.0,
             **self.velocity_metrics.summary(),
             **self.entropy_metrics.summary(final_time=total_time),
@@ -346,3 +416,13 @@ class WandbMetrics(RosWandbLogger):
             self.run.finish()
 
         return summary
+
+
+def _finite_extra(extra, key):
+    if not extra:
+        return np.nan
+    try:
+        value = float(extra.get(key, np.nan))
+    except (TypeError, ValueError):
+        return np.nan
+    return value if np.isfinite(value) else np.nan

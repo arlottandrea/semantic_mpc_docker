@@ -282,6 +282,7 @@ class NeuralMPC:
             target_lambdas = self.beliefs_k[target_indices, :]
 
             step_start = time.perf_counter()
+            used_warm_start = not warm_start and mpc_step is not None
             try:
                 if warm_start or mpc_step is None:
                     rospy.loginfo("Running MPC opt (cold start).")
@@ -344,6 +345,13 @@ class NeuralMPC:
                 entropy_value,
                 belief=self.beliefs_k.full(),
                 tree_positions=self.trees_pos,
+                step=mpciter + 1,
+                controller_compute_time_ms=step_duration * 1000.0,
+                selected_target_id=(int(target_indices[0]) if len(target_indices) else None),
+                active_target_count_current=int(np.sum(target_mask)),
+                observation_episode_active=bool(scores is not None),
+                command_speed_mps=math.sqrt(vx_val ** 2 + vy_val ** 2),
+                extra={"mpc_warm_start_reused": bool(used_warm_start)},
             )
 
             rospy.loginfo_throttle(5.0, "Entropy: %s", entropy_value)
@@ -414,6 +422,8 @@ class NeuralMPC:
                 "mean_controller_compute_time_ms": float(np.mean(durations) * 1000.0) if durations else np.nan,
                 "median_controller_compute_time_ms": float(np.median(durations) * 1000.0) if durations else np.nan,
                 "p95_controller_compute_time_ms": float(np.percentile(durations, 95) * 1000.0) if durations else np.nan,
+                "total_controller_compute_time_ms": float(np.sum(durations) * 1000.0) if durations else 0.0,
+                "total_steps": total_commands,
                 "termination_reason": termination_reason,
                 "success": termination_reason == "all_trees_tracked",
                 "num_tracked_final": int(

@@ -35,6 +35,10 @@ mpc_ipopt_max_iter: 5
 
 observation_entropy_threshold: 0.025
 max_observe_time: 30.0
+belief_tracking_threshold: 0.95
+active_target_count: 5
+# Symmetric nominal one-step sensor model used only to rank Greedy-IG targets.
+greedy_ig_observation_accuracy: 0.9
 mower_offset: 2.0
 mower_spacing: 4.0
 mower_axis: ""

@@ -99,25 +99,12 @@ class RLAgentNode:
         self.max_lin_accel = float(rospy.get_param("~max_lin_accel", 1.0))
         self.max_yaw_accel = float(rospy.get_param("~max_yaw_accel", math.pi / 2.0))
         self.safe_distance = float(rospy.get_param("~safe_distance", 1.5))
+        self.command_filter_enabled = bool(rospy.get_param("~rl_command_filter_enabled", True))
         self.measurement_period = float(rospy.get_param("~measurement_period", self.delta_t))
         self.tree_velocity_radius = float(rospy.get_param("~tree_velocity_radius", 5.0))
         self.tree_entropy_threshold = float(rospy.get_param("~tree_entropy_threshold", 0.025))
         self.tree_entropy_start_epsilon = float(
             rospy.get_param("~tree_entropy_start_epsilon", 1e-4)
-        )
-        self.stall_recovery_enabled = bool(rospy.get_param("~rl_stall_recovery_enabled", True))
-        self.stall_timeout_s = float(rospy.get_param("~rl_stall_timeout_s", 5.0))
-        self.stall_recovery_duration_s = float(
-            rospy.get_param("~rl_stall_recovery_duration_s", 2.0)
-        )
-        self.stall_progress_distance_m = float(
-            rospy.get_param("~rl_stall_progress_distance_m", 0.1)
-        )
-        self.stall_entropy_progress = float(
-            rospy.get_param("~rl_stall_entropy_progress", 0.005)
-        )
-        self.stall_recovery_speed_mps = float(
-            rospy.get_param("~rl_stall_recovery_speed_mps", 0.5)
         )
         self.num_runs = int(rospy.get_param("~num_runs", 1))
         self.run_index_offset = int(
@@ -203,12 +190,6 @@ class RLAgentNode:
         self._last_velocity_metrics = {}
         self.policy_inference_times_ms = []
         self.controller_compute_times_ms = []
-        self._progress_anchor_position = None
-        self._progress_anchor_entropy = None
-        self._progress_anchor_time = 0.0
-        self._recovery_until = 0.0
-        self.stall_recovery_count = 0
-        self.stall_recovery_steps = 0
         self.model_path = model_path
         self.model_device = device
         self.metrics = None
@@ -243,15 +224,10 @@ class RLAgentNode:
             "max_lin_accel": self.max_lin_accel,
             "max_yaw_accel": self.max_yaw_accel,
             "safe_distance": self.safe_distance,
+            "rl_command_filter_enabled": self.command_filter_enabled,
             "tree_velocity_radius": self.tree_velocity_radius,
             "tree_entropy_threshold": self.tree_entropy_threshold,
             "tree_entropy_start_epsilon": self.tree_entropy_start_epsilon,
-            "rl_stall_recovery_enabled": self.stall_recovery_enabled,
-            "rl_stall_timeout_s": self.stall_timeout_s,
-            "rl_stall_recovery_duration_s": self.stall_recovery_duration_s,
-            "rl_stall_progress_distance_m": self.stall_progress_distance_m,
-            "rl_stall_entropy_progress": self.stall_entropy_progress,
-            "rl_stall_recovery_speed_mps": self.stall_recovery_speed_mps,
             "deterministic": self.deterministic,
             "termination_criterion": "all_trees_belief_confidence_threshold",
             "model_path": model_path,
@@ -498,12 +474,6 @@ class RLAgentNode:
         self.entropy_metrics.update(0.0, self.beliefs)
         self.policy_inference_times_ms = []
         self.controller_compute_times_ms = []
-        self._progress_anchor_position = self.drone[:2].copy()
-        self._progress_anchor_entropy = self.total_entropy(include_tracked=True)
-        self._progress_anchor_time = 0.0
-        self._recovery_until = 0.0
-        self.stall_recovery_count = 0
-        self.stall_recovery_steps = 0
         self.done_pub.publish(Bool(data=False))
         self.metrics.start()
         obs = self._build_obs()
@@ -599,79 +569,6 @@ class RLAgentNode:
         self.policy_inference_times_ms.append((time.perf_counter() - inference_start) * 1000.0)
         return np.asarray(action, dtype=np.float32).reshape(3)
 
-    def _apply_liveness_recovery(self, policy_action, current_entropy):
-        """Escape deterministic policy fixed points without masking normal observation stops."""
-        action = np.asarray(policy_action, dtype=np.float32).copy()
-        if not self.stall_recovery_enabled:
-            return action, False
-
-        now = self.metrics.elapsed()
-        moved = float(np.linalg.norm(self.drone[:2] - self._progress_anchor_position))
-        entropy_progress = float(self._progress_anchor_entropy - current_entropy)
-        if (
-            moved >= self.stall_progress_distance_m
-            or entropy_progress >= self.stall_entropy_progress
-        ):
-            self._progress_anchor_position = self.drone[:2].copy()
-            self._progress_anchor_entropy = float(current_entropy)
-            self._progress_anchor_time = now
-            if now >= self._recovery_until:
-                self._recovery_until = 0.0
-
-        if now >= self._recovery_until and now - self._progress_anchor_time >= self.stall_timeout_s:
-            self._recovery_until = now + self.stall_recovery_duration_s
-            self._progress_anchor_position = self.drone[:2].copy()
-            self._progress_anchor_entropy = float(current_entropy)
-            self._progress_anchor_time = now
-            self.stall_recovery_count += 1
-            rospy.logwarn(
-                "RL liveness recovery %d: no %.2fm movement or %.4f-bit entropy progress for %.1fs "
-                "(policy norm %.3f, applied speed %.3fm/s, measurement age %.2fs).",
-                self.stall_recovery_count,
-                self.stall_progress_distance_m,
-                self.stall_entropy_progress,
-                self.stall_timeout_s,
-                float(np.linalg.norm(policy_action[:2])),
-                float(np.linalg.norm(self._last_command[:2])),
-                self._measurement_age_s(),
-            )
-
-        if now >= self._recovery_until:
-            return action, False
-
-        untracked = np.flatnonzero(~self.tracked)
-        if untracked.size == 0:
-            return action, False
-        distances = np.linalg.norm(self.trees[untracked] - self.drone[:2], axis=1)
-        target_id = int(untracked[int(np.argmin(distances))])
-        target_vector = self.trees[target_id] - self.drone[:2]
-        target_distance = float(np.linalg.norm(target_vector))
-        if target_distance < 1e-6:
-            target_unit = np.array([1.0, 0.0], dtype=np.float32)
-        else:
-            target_unit = (target_vector / target_distance).astype(np.float32)
-
-        if target_distance <= self.obs_range:
-            world_direction = np.array([-target_unit[1], target_unit[0]], dtype=np.float32)
-            if (self.trial_seed + target_id) % 2:
-                world_direction = -world_direction
-        else:
-            world_direction = target_unit
-
-        speed = min(self.max_velocity, max(0.0, self.stall_recovery_speed_mps))
-        heading = math.radians(float(self.drone[2]))
-        world_to_body = np.array(
-            [[math.cos(heading), math.sin(heading)], [-math.sin(heading), math.cos(heading)]],
-            dtype=np.float32,
-        )
-        action[:2] = np.clip(
-            world_to_body @ (world_direction * speed) / max(self.max_velocity, 1e-6),
-            -1.0,
-            1.0,
-        )
-        self.stall_recovery_steps += 1
-        return action, True
-
     def _measurement_age_s(self):
         if self._last_measurement_time is None:
             return float("inf")
@@ -689,19 +586,21 @@ class RLAgentNode:
         c = np.cos(np.radians(heading))
         s = np.sin(np.radians(heading))
         world_velocity = np.array([[c, -s], [s, c]], dtype=np.float32) @ local_velocity
-        max_delta_velocity = self.max_lin_accel * self.delta_t
-        world_velocity = self._prev_world_velocity + np.clip(
-            world_velocity - self._prev_world_velocity,
-            -max_delta_velocity,
-            max_delta_velocity,
-        )
-        world_velocity = self._apply_obstacle_safety_filter(world_velocity)
+        if self.command_filter_enabled:
+            max_delta_velocity = self.max_lin_accel * self.delta_t
+            world_velocity = self._prev_world_velocity + np.clip(
+                world_velocity - self._prev_world_velocity,
+                -max_delta_velocity,
+                max_delta_velocity,
+            )
+            world_velocity = self._apply_obstacle_safety_filter(world_velocity)
 
         yaw_velocity = float(np.clip(action[2], -1.0, 1.0)) * self.max_yaw_velocity
-        max_delta_yaw = self.max_yaw_accel * self.delta_t
-        yaw_velocity = self._prev_yaw_velocity + float(
-            np.clip(yaw_velocity - self._prev_yaw_velocity, -max_delta_yaw, max_delta_yaw)
-        )
+        if self.command_filter_enabled:
+            max_delta_yaw = self.max_yaw_accel * self.delta_t
+            yaw_velocity = self._prev_yaw_velocity + float(
+                np.clip(yaw_velocity - self._prev_yaw_velocity, -max_delta_yaw, max_delta_yaw)
+            )
         target_xy = self.drone[:2] + world_velocity * self.delta_t
         target_heading_deg = (heading + math.degrees(yaw_velocity * self.delta_t)) % 360.0
         q = tf.transformations.quaternion_from_euler(0.0, 0.0, math.radians(target_heading_deg))
@@ -826,11 +725,7 @@ class RLAgentNode:
         new_targets_tracked = self._update_beliefs_from_measurements()
         obs = self._build_obs()
         policy_action = self._predict_action(obs)
-        all_tree_entropy = self.total_entropy(include_tracked=True)
-        action, recovery_active = self._apply_liveness_recovery(
-            policy_action,
-            all_tree_entropy,
-        )
+        action = policy_action
         command_compute_time_ms = self._publish_step(action)
         self.controller_compute_times_ms.append(
             self.policy_inference_times_ms[-1] + command_compute_time_ms
@@ -851,7 +746,6 @@ class RLAgentNode:
             "new_targets_tracked": int(new_targets_tracked),
             "action": action,
             "policy_action": policy_action,
-            "liveness_recovery_active": recovery_active,
         }
         self._log_step(info)
         return obs, action, info
@@ -881,8 +775,6 @@ class RLAgentNode:
                 "policy_action/forward": float(policy_action[0]),
                 "policy_action/lateral": float(policy_action[1]),
                 "policy_action/yaw_rate": float(policy_action[2]),
-                "rl_liveness_recovery_active": int(info["liveness_recovery_active"]),
-                "rl_liveness_recovery_count": self.stall_recovery_count,
                 "command/vx_mps": float(self._last_command[0]),
                 "command/vy_mps": float(self._last_command[1]),
                 "command/yaw_rate_radps": float(self._last_command[2]),
@@ -892,6 +784,11 @@ class RLAgentNode:
                 "measurement_age_s": self._measurement_age_s(),
                 "policy_inference_time_ms": self.policy_inference_times_ms[-1],
                 "controller_compute_time_ms": self.controller_compute_times_ms[-1],
+                "selected_target_id": -1,
+                "active_target_count_current": min(int(np.sum(~self.tracked)), self.k_obs) if self.tracked is not None else 0,
+                "observation_episode_active": bool(self._measurement_age_s() <= self.measurement_period),
+                "worst_tree_entropy": float(np.max(self.entropy_metrics.entropies(self.beliefs))),
+                "unresolved_tree_count": int(self.ntargets - info["num_tracked"]),
             }
         )
 
@@ -934,6 +831,9 @@ class RLAgentNode:
         )
         inference_times = np.asarray(self.policy_inference_times_ms, dtype=float)
         compute_times = np.asarray(self.controller_compute_times_ms, dtype=float)
+        entropy_reduction = self._initial_entropy - final_entropy
+        final_tree_entropy = self.entropy_metrics.entropies(self.beliefs)
+        total_compute_ms = float(np.sum(compute_times)) if compute_times.size else 0.0
         summary = self.metrics.finish(
             {
                 "total_time_execution_s": self.metrics.elapsed(),
@@ -941,13 +841,17 @@ class RLAgentNode:
                 "total_steps": self.steps,
                 "initial_entropy": self._initial_entropy,
                 "final_entropy": final_entropy,
-                "entropy_reduction": self._initial_entropy - final_entropy,
+                "entropy_reduction": entropy_reduction,
+                "entropy_reduction_per_meter": entropy_reduction / self.total_distance if self.total_distance > 0.0 else np.nan,
+                "entropy_reduction_per_second": entropy_reduction / self.metrics.elapsed() if self.metrics.elapsed() > 0.0 else np.nan,
+                "entropy_reduction_per_compute_ms": entropy_reduction / total_compute_ms if total_compute_ms > 0.0 else np.nan,
+                "worst_tree_entropy_final": float(np.max(final_tree_entropy)),
+                "p90_tree_entropy_final": float(np.percentile(final_tree_entropy, 90)),
+                "p95_tree_entropy_final": float(np.percentile(final_tree_entropy, 95)),
                 "num_tracked_final": int(np.sum(self.tracked)) if self.tracked is not None else 0,
                 "total_targets": self.ntargets,
                 "termination_reason": termination_reason,
                 "success": all_tracked,
-                "rl_liveness_recovery_count": self.stall_recovery_count,
-                "rl_liveness_recovery_steps": self.stall_recovery_steps,
                 **self.velocity_metrics.summary(),
                 **self.entropy_metrics.summary(final_time=self.metrics.elapsed()),
                 "mean_policy_inference_time_ms": float(np.mean(inference_times)) if inference_times.size else np.nan,
@@ -956,6 +860,7 @@ class RLAgentNode:
                 "mean_controller_compute_time_ms": float(np.mean(compute_times)) if compute_times.size else np.nan,
                 "median_controller_compute_time_ms": float(np.median(compute_times)) if compute_times.size else np.nan,
                 "p95_controller_compute_time_ms": float(np.percentile(compute_times, 95)) if compute_times.size else np.nan,
+                "total_controller_compute_time_ms": total_compute_ms,
             }
         )
         rospy.loginfo(
