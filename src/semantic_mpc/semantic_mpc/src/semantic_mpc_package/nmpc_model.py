@@ -10,8 +10,8 @@ from semantic_mpc_package.perception_model import MultiLayerPerceptron
 torch.jit.set_fusion_strategy([("STATIC", 0)])
 
 
-def get_latest_best_model(label):
-    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", label)
+def get_latest_best_model():
+    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
     model_files = [
         filename
         for filename in os.listdir(model_dir)
@@ -28,27 +28,14 @@ def get_latest_best_model(label):
     return model_path
 
 
-def load_l4casadi_models(params):
-    models = []
-    for label in list(params["model_labels"]):
-        model = MultiLayerPerceptron(
-            input_dim=int(params["nn_input_dim"]),
-            hidden_size=int(params["hidden_size"]),
-            hidden_layers=int(params["hidden_layers"]),
-            output_dim=int(params["nn_output_dim"]),
-            threshold=float(params["nn_threshold"]),
-            gate_slope=float(params["nn_gate_slope"]),
-        )
-        model.load_state_dict(
-            torch.load(get_latest_best_model(label), map_location=torch.device(params["model_device"]))
-        )
-        model.eval()
-        models.append(
-            l4c.L4CasADi(
-                model,
-                batched=True,
-                device=params["model_device"],
-                name=label,
-            )
-        )
-    return models
+def load_l4casadi_model(params):
+    model = MultiLayerPerceptron(
+        input_dim=int(params["nn_input_dim"]), hidden_size=int(params["hidden_size"]),
+        hidden_layers=int(params["hidden_layers"]), output_dim=int(params["nn_output_dim"]),
+        threshold=float(params["nn_threshold"]), gate_slope=float(params["nn_gate_slope"]),
+    )
+    model.load_state_dict(torch.load(
+        get_latest_best_model(), map_location=torch.device(params["model_device"])
+    ))
+    model.eval()
+    return l4c.L4CasADi(model, batched=True, device=params["model_device"], name="perception")

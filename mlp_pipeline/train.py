@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train NMPC-compatible ripe/raw perception surrogates from the generated CSV."""
+"""Train one two-output NMPC perception surrogate from the generated CSV."""
 
 import argparse
 import ast
@@ -32,13 +32,11 @@ def augment(x, y, fraction, margin, rng):
     angles = rng.uniform(-np.pi, np.pi, count)
     yaw = rng.uniform(-np.pi, np.pi, count)
     extra_x = np.column_stack([radii * np.cos(angles), radii * np.sin(angles), yaw])
-    extra_y = np.full(count, 0.5)
+    extra_y = np.full((count, y.shape[1]), 0.5, dtype=np.float32)
     return np.concatenate([x, extra_x]), np.concatenate([y, extra_y])
 
 
-def train_label(label, x, score, cfg, root, device, seed):
-    # Preserve the class ordering expected by the existing NMPC notebooks/runtime.
-    target = np.column_stack([score, 1.0 - score]) if label == "ripe" else np.column_stack([1.0 - score, score])
+def train_model(x, target, cfg, device, seed):
     dataset = TensorDataset(torch.tensor(x, dtype=torch.float32), torch.tensor(target, dtype=torch.float32))
     validation_count = max(1, int(round(len(dataset) * float(cfg["validation_split"]))))
     if validation_count >= len(dataset):
@@ -60,7 +58,7 @@ def train_label(label, x, score, cfg, root, device, seed):
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     criterion = torch.nn.MSELoss()
-    output_dir = Path(cfg["output_dir"]) / label
+    output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     if cfg.get("replace_existing_checkpoints", True):
         for old_checkpoint in output_dir.glob("best_model_epoch_*.pth"):
@@ -87,8 +85,8 @@ def train_label(label, x, score, cfg, root, device, seed):
         train_loss = train_total / len(train_set)
         validation_loss = validation_total / len(validation_set)
         writer.add_scalars("loss", {"train": train_loss, "validation": validation_loss}, epoch)
-        print("{} epoch {}/{} train={:.6f} validation={:.6f}".format(
-            label, epoch, cfg["epochs"], train_loss, validation_loss))
+        print("epoch {}/{} train={:.6f} validation={:.6f}".format(
+            epoch, cfg["epochs"], train_loss, validation_loss))
         if validation_loss < best_loss:
             if best_path and best_path.exists():
                 best_path.unlink()
@@ -112,13 +110,9 @@ def main(config_path):
     if not rows or not required.issubset(rows[0]):
         raise ValueError("training CSV must contain: {}".format(", ".join(sorted(required))))
     x = np.asarray([[float(row[k]) for k in ("x", "y", "yaw")] for row in rows], dtype=np.float32)
-    rng = np.random.default_rng(seed)
-    results = {}
-    for label in cfg["labels"]:
-        if label not in ("ripe", "raw"):
-            raise ValueError("training.labels supports only ripe and raw")
-        detection_column = "Ripe_scores" if label == "ripe" else "Raw_scores"
-        score = np.asarray([
+    scores = []
+    for detection_column in ("Ripe_scores", "Raw_scores"):
+        scores.append(np.asarray([
             np.clip(
                 weighted_detection_score(
                     [float(value) for value in ast.literal_eval(row[detection_column])],
@@ -129,11 +123,13 @@ def main(config_path):
                 1.0,
             )
             for row in rows
-        ], dtype=np.float32)
-        label_x, label_score = augment(x, score, float(cfg["augment_fraction"]),
-                                       float(cfg["augment_distance_margin"]), rng)
-        checkpoint, loss = train_label(label, label_x, label_score, cfg, root, device, seed)
-        results[label] = {"checkpoint": checkpoint, "best_validation_loss": loss}
+        ], dtype=np.float32))
+    target = np.column_stack(scores)  # Runtime contract: [ripe, raw].
+    x, target = augment(x, target, float(cfg["augment_fraction"]),
+                        float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
+    checkpoint, loss = train_model(x, target, cfg, device, seed)
+    results = {"checkpoint": checkpoint, "best_validation_loss": loss,
+               "output_labels": ["ripe", "raw"]}
     metadata = {"created_at": datetime.now(timezone.utc).isoformat(), "source": str(source),
                 "device": str(device), "seed": seed, "results": results}
     metadata_path = Path(cfg["output_dir"]) / "training_metadata.json"

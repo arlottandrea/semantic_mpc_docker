@@ -12,7 +12,7 @@ from visualization_msgs.msg import MarkerArray
 from semantic_mpc_package.experiment_metrics import WandbMetrics
 from semantic_mpc_package.baselines import resolve_mower_heading
 from semantic_mpc_package.nmpc_config import default_nmpc_params, load_semantic_mpc_params
-from semantic_mpc_package.nmpc_model import load_l4casadi_models
+from semantic_mpc_package.nmpc_model import load_l4casadi_model
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
 from semantic_mpc_package.ros_com_lib.sensors import (
     create_path_from_mpc_prediction,
@@ -46,7 +46,7 @@ class NeuralMPC:
         self._validate_comparability()
         self.run_root = self.params["run_dir"]
 
-        self.l4c_nn = load_l4casadi_models(self.params)
+        self.l4c_nn = load_l4casadi_model(self.params)
         self.optimizer = NmpcOptimizer(self.params, self.l4c_nn)
 
         self.ros = RosExperimentContext(self.params)
@@ -100,8 +100,8 @@ class NeuralMPC:
             raise ValueError("active target and obstacle counts must be positive")
         if not np.isclose(self.params["nn_threshold"], self.observation_range):
             raise ValueError("NMPC surrogate gate nn_threshold must equal observation_range")
-        if list(self.params["model_labels"]) != ["ripe", "raw"]:
-            raise ValueError("NMPC belief/model class order must be ['ripe', 'raw']")
+        if list(self.params["nn_output_labels"]) != ["ripe", "raw"]:
+            raise ValueError("NMPC network output order must be ['ripe', 'raw']")
         if not 0.5 < self.belief_tracking_threshold < 1.0:
             raise ValueError("belief_tracking_threshold must be between 0.5 and 1.0")
         if self.belief_update_period != 1:

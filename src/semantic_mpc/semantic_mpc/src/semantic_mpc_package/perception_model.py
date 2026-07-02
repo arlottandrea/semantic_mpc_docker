@@ -1,7 +1,6 @@
 """PyTorch perception surrogate shared by training and the NMPC runtime."""
 
 import torch
-import torch.nn.functional as F
 
 
 class MultiLayerPerceptron(torch.nn.Module):
@@ -26,4 +25,6 @@ class MultiLayerPerceptron(torch.nn.Module):
         h = torch.tanh(self.input_layer(x))
         for layer in self.hidden_layers:
             h = torch.tanh(layer(h))
-        return F.softmax(self.out_layer(h) * gate.unsqueeze(-1), dim=-1)
+        # Independent correct-observation probabilities in [ripe, raw] order.
+        # The distance gate drives both outputs to the neutral value 0.5.
+        return torch.sigmoid(self.out_layer(h) * gate.unsqueeze(-1))

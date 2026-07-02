@@ -9,7 +9,7 @@ nn_output_dim: 2
 nn_threshold: 5.0
 nn_gate_slope: 10.0
 model_device: "cuda"
-model_labels: ["ripe", "raw"]
+nn_output_labels: ["ripe", "raw"]
 
 mpc_horizon: 5
 state_dim: 3

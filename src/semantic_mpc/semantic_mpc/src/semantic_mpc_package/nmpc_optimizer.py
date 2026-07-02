@@ -216,16 +216,17 @@ class NmpcOptimizer:
             obj += acceleration_regularization_weight * normalized_acceleration
 
         nn_full_batch_input = ca.vcat(ca_batch)
-        surrogate_output_ripe = self.l4c_nn[0](nn_full_batch_input)
-        surrogate_output_raw = self.l4c_nn[1](nn_full_batch_input)
+        surrogate_output = self.l4c_nn(nn_full_batch_input)
 
         for i in range(steps):
             start = i * self.num_target_trees
             stop = (i + 1) * self.num_target_trees
+            correct_ripe = surrogate_output[start:stop, 0]
+            correct_raw = surrogate_output[start:stop, 1]
+            likelihood_if_ripe = ca.horzcat(correct_ripe, 1.0 - correct_ripe)
+            likelihood_if_raw = ca.horzcat(1.0 - correct_raw, correct_raw)
             expected_entropy = self.expected_posterior_entropy(
-                L0,
-                surrogate_output_ripe[start:stop, :],
-                surrogate_output_raw[start:stop, :],
+                L0, likelihood_if_ripe, likelihood_if_raw
             )
             prior_entropy = self.entropy_target(L0)
             information_gain_by_target += information_discount ** i * ca.fmax(

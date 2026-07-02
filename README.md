@@ -195,11 +195,10 @@ Do not expose the TCP endpoint on `0.0.0.0` at the host level unless remote Unit
 
 The Docker image contains code but no runtime models. Compose mounts `models/` read-only. Git LFS versions the available YOLO and RL files.
 
-NMPC will intentionally refuse to start until both compatible checkpoint sets exist:
+NMPC will intentionally refuse to start until the compatible two-output checkpoint exists:
 
 ```text
-models/nmpc/ripe/best_model_epoch_<N>.pth
-models/nmpc/raw/best_model_epoch_<N>.pth
+models/nmpc/best_model_epoch_<N>.pth
 ```
 
 Generate the YOLO-derived training dataset and train both surrogate models with
@@ -243,4 +242,4 @@ Confirm redistribution rights for the YOLO weight and trained checkpoints before
 - Unity cannot connect: ensure the container is healthy and Unity uses `127.0.0.1`, not the container IP.
 - No images/detections: verify Unity publishes `/agent_0/camera/color/image/compressed` and depth/camera-info topics.
 - Data association waits forever: Unity must provide `/obj_pose_srv` and the required TF frames.
-- NMPC exits immediately: install both `ripe` and `raw` checkpoint sets described above.
+- NMPC exits immediately: install the two-output checkpoint described above.

@@ -26,8 +26,8 @@ Ripe_scores,Raw_scores,tree_score
 `[0, 1]`. The input and output paths may be identical; the completed CSV is
 written to a temporary file and then replaced atomically.
 
-Training consumes this same completed CSV and derives the separate ripe/raw
-surrogate targets from the retained confidence lists.
+Training consumes this same completed CSV and trains one shared surrogate with
+two independent outputs in `[ripe, raw]` order.
 
 ## Run with Docker
 
@@ -45,11 +45,11 @@ docker compose --profile pipeline run --rm model-train
 ```
 
 For NVIDIA GPU execution, add `-f compose.gpu.yaml`; set `device: cpu` in the
-YAML for a CPU-only run. Training writes runtime-compatible checkpoints to
-`models/nmpc/{ripe,raw}/best_model_epoch_<N>.pth` and records provenance in
+YAML for a CPU-only run. Training writes a runtime-compatible checkpoint to
+`models/nmpc/best_model_epoch_<N>.pth` and records provenance in
 `models/nmpc/training_metadata.json`.
 
-By default, training removes older `best_model_epoch_*.pth` files in each label
+By default, training removes older `best_model_epoch_*.pth` files in the model
 directory. This prevents the runtime's highest-epoch lookup from selecting a
 stale checkpoint. Set `training.replace_existing_checkpoints: false` to retain
 them, but then manage runtime model selection explicitly.
