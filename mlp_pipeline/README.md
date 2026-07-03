@@ -75,3 +75,29 @@ The default `180` degree camera-yaw offset matches the recorded Unity dataset;
 the angular tolerance defaults to `10` degrees. Both can be overridden with
 `--camera-yaw-offset-deg` and `--look-at-tolerance-deg`. The plot is written to
 `runs/mlp_inference_looking_at_tree.png`.
+
+## Batch fog datasets
+
+Fog captures use the ordered layout
+`datasets/fog/<level>/{raw,ripe}/dataset.csv`. Run generation, training,
+statistics and plots for every paired level with the local Pixi environment:
+
+```powershell
+.pixi\envs\default\python.exe mlp_pipeline\batch_fog.py --variant structured3
+```
+
+Outputs are namespaced by model variant under `runs/fog_mlp_batch/<variant>`
+and `models/nmpc/fog/<variant>`. This allows results from different Git
+branches to coexist. Branches implementing two heads or one scalar output can
+reuse the orchestrator by preserving the common `--config` trainer interface
+and the visualizer CLI, for example:
+
+```powershell
+.pixi\envs\default\python.exe mlp_pipeline\batch_fog.py `
+  --variant two_head `
+  --train-script mlp_pipeline\train.py `
+  --visualize-script mlp_pipeline\visualize.py
+```
+
+The batch is resumable. Use `--force-generate`, `--force-train`, or
+`--force-visualize` to invalidate a specific stage.

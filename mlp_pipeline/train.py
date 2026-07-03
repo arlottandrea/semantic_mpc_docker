@@ -5,13 +5,20 @@ import argparse
 import ast
 import csv
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from torch.utils.tensorboard import SummaryWriter
+
+ROOT = Path(__file__).resolve().parents[1]
+SEMANTIC_SRC = ROOT / "src" / "semantic_mpc" / "semantic_mpc" / "src"
+if str(SEMANTIC_SRC) not in sys.path:
+    sys.path.insert(0, str(SEMANTIC_SRC))
 
 try:
     from .common import load_config, resolve_device, seed_everything, weighted_detection_score
@@ -35,17 +42,65 @@ def augment(x, y, fraction, margin, rng):
 
 
 def structured_loss(prediction, target, visibility_weight, semantic_weight):
-    visibility = torch.nn.functional.binary_cross_entropy(
-        prediction[:, 0], target[:, 0]
+    output_dim = int(prediction.shape[1])
+    if output_dim >= 3:
+        visibility = torch.nn.functional.binary_cross_entropy(
+            prediction[:, 0], target[:, 0]
+        )
+        semantic_mask = target[:, 3:5] * target[:, 0:1]
+        semantic_elementwise = torch.nn.functional.binary_cross_entropy(
+            prediction[:, 1:3], target[:, 1:3], reduction="none"
+        )
+        semantic = (semantic_elementwise * semantic_mask).sum() / semantic_mask.sum().clamp_min(1.0)
+        return visibility_weight * visibility + semantic_weight * semantic
+    if output_dim == 2:
+        target_semantic = target[:, 1:3]
+        semantic_mask = target[:, 0:1]
+        semantic_elementwise = torch.nn.functional.binary_cross_entropy(
+            prediction[:, :2], target_semantic, reduction="none"
+        )
+        semantic = (semantic_elementwise * semantic_mask).sum() / semantic_mask.sum().clamp_min(1.0)
+        return semantic_weight * semantic
+    target_value = target[:, 1:2]
+    target_mask = target[:, 0:1]
+    elementwise = torch.nn.functional.binary_cross_entropy(
+        prediction[:, :1], target_value, reduction="none"
     )
-    # Only the accuracy head corresponding to the known physical class is
-    # supervised, and only when at least min_detections were observed.
-    semantic_mask = target[:, 3:5] * target[:, 0:1]
-    semantic_elementwise = torch.nn.functional.binary_cross_entropy(
-        prediction[:, 1:3], target[:, 1:3], reduction="none"
-    )
-    semantic = (semantic_elementwise * semantic_mask).sum() / semantic_mask.sum().clamp_min(1.0)
-    return visibility_weight * visibility + semantic_weight * semantic
+    return semantic_weight * ((elementwise * target_mask).sum() / target_mask.sum().clamp_min(1.0))
+
+
+def mse_loss(prediction, target, visibility_weight, semantic_weight):
+    output_dim = min(prediction.shape[1], target.shape[1])
+    return torch.nn.functional.mse_loss(prediction[:, :output_dim], target[:, :output_dim])
+
+
+def headwise_bce_loss(prediction, target, visibility_weight, semantic_weight):
+    output_dim = int(prediction.shape[1])
+    if output_dim >= 3:
+        return structured_loss(prediction, target, visibility_weight, semantic_weight)
+    if output_dim == 2:
+        target_values = target[:, 1:3]
+        mask = target[:, 0:1]
+        loss = F.binary_cross_entropy(prediction[:, :2], target_values, reduction="none")
+        return (loss * mask).sum() / mask.sum().clamp_min(1.0)
+    target_value = target[:, 1:2]
+    mask = target[:, 0:1]
+    loss = F.binary_cross_entropy(prediction[:, :1], target_value, reduction="none")
+    return (loss * mask).sum() / mask.sum().clamp_min(1.0)
+
+
+def resolve_loss_function(cfg):
+    if isinstance(cfg, dict):
+        loss_name = str(cfg.get("loss_function", cfg.get("loss", "structured"))).lower()
+    else:
+        loss_name = str(cfg).lower()
+    if loss_name in {"structured", "structured_loss"}:
+        return structured_loss
+    if loss_name in {"bce", "binary_cross_entropy", "binary_crossentropy", "headwise_bce", "headwise"}:
+        return headwise_bce_loss
+    if loss_name in {"mse", "mean_squared_error", "mean_squared"}:
+        return mse_loss
+    raise ValueError("unsupported loss function '{}'".format(loss_name))
 
 
 def train_model(x, target, cfg, device, seed):
@@ -81,6 +136,7 @@ def train_model(x, target, cfg, device, seed):
             old_checkpoint.unlink()
     writer = SummaryWriter(str(output_dir / "tensorboard"))
     best_loss, best_path = float("inf"), None
+    loss_fn = resolve_loss_function(cfg)
     weights = (float(cfg.get("visibility_loss_weight", 1.0)),
                float(cfg.get("semantic_loss_weight", 1.0)))
     for epoch in range(1, int(cfg["epochs"]) + 1):
@@ -89,7 +145,7 @@ def train_model(x, target, cfg, device, seed):
         for features, targets in train_loader:
             features, targets = features.to(device), targets.to(device)
             optimizer.zero_grad()
-            loss = structured_loss(model(features), targets, *weights)
+            loss = loss_fn(model(features), targets, *weights)
             loss.backward()
             optimizer.step()
             train_total += loss.item() * len(features)
@@ -98,7 +154,7 @@ def train_model(x, target, cfg, device, seed):
         with torch.no_grad():
             for features, targets in validation_loader:
                 features, targets = features.to(device), targets.to(device)
-                validation_total += structured_loss(model(features), targets, *weights).item() * len(features)
+                validation_total += loss_fn(model(features), targets, *weights).item() * len(features)
         train_loss = train_total / len(train_set)
         validation_loss = validation_total / len(validation_set)
         writer.add_scalars("loss", {"train": train_loss, "validation": validation_loss}, epoch)
@@ -111,7 +167,7 @@ def train_model(x, target, cfg, device, seed):
             best_path = output_dir / "best_model_epoch_{}.pth".format(epoch)
             torch.save(model.state_dict(), str(best_path))
     writer.close()
-    return str(best_path), best_loss
+    return str(best_path), best_loss, train_loss, validation_loss
 
 
 def load_training_rows(cfg, root):
@@ -158,13 +214,23 @@ def main(config_path):
                               float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
     target = np.column_stack([model_target, masks])
-    checkpoint, loss = train_model(x, target, cfg, device, seed)
+    checkpoint, loss, final_train_loss, final_validation_loss = train_model(
+        x, target, cfg, device, seed
+    )
+    output_labels = ["visibility", "accuracy_raw", "accuracy_ripe"]
+    output_dim = int(cfg.get("output_dim", 3))
+    if output_dim == 2:
+        output_labels = ["accuracy_raw", "accuracy_ripe"]
+    elif output_dim == 1:
+        output_labels = [cfg.get("single_output_label", "accuracy_raw")]
     metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(), "sources": sources,
         "device": str(device), "seed": seed,
         "min_detections_for_visibility": int(cfg.get("min_detections_for_visibility", 5)),
-        "output_labels": ["visibility", "accuracy_raw", "accuracy_ripe"],
+        "output_labels": output_labels,
         "checkpoint": checkpoint, "best_validation_loss": loss,
+        "final_train_loss": final_train_loss,
+        "final_validation_loss": final_validation_loss,
     }
     metadata_path = Path(cfg["output_dir"]) / "training_metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")

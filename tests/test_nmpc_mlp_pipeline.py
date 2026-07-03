@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT / "src" / "semantic_mpc" / "semantic_mpc" / "src"))
 sys.path.insert(0, str(ROOT))
 
 from mlp_pipeline.common import weighted_detection_score
-from mlp_pipeline.train import augment
+from mlp_pipeline.train import augment, resolve_loss_function
+from mlp_pipeline.visualize import prepare_inference_targets
 from semantic_mpc_package.perception_model import MultiLayerPerceptron
 
 
@@ -38,3 +39,14 @@ def test_augmentation_is_deterministic_and_neutral():
     augmented_x, augmented_y = augment(x, y, 1.0, 5.0, np.random.default_rng(4))
     assert augmented_x.shape == (4, 3)
     np.testing.assert_allclose(augmented_y[-2:], [[0.0, 0.5, 0.5]] * 2)
+
+
+def test_loss_function_can_be_selected_from_config():
+    loss_fn = resolve_loss_function({"loss_function": "mse"})
+    assert loss_fn is not None
+
+
+def test_inference_targets_support_multiple_output_heads():
+    targets = prepare_inference_targets(np.asarray([[0.0, 0.4, 0.6]], dtype=np.float32), output_dim=3)
+    assert targets.shape == (1, 3)
+    assert targets[0, 0] == 0.0

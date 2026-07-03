@@ -4,12 +4,19 @@
 import argparse
 import ast
 import csv
+import json
+import os
 import sys
 from pathlib import Path
 
+# The Windows pixi environment contains both Intel and LLVM OpenMP runtimes
+# (PyTorch and Matplotlib dependencies respectively).  In this inference-only
+# process, allow them to coexist so plotting does not abort at import time.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import torch
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
 try:
     from .common import load_config, weighted_detection_score
@@ -47,13 +54,24 @@ def latest_checkpoint(directory):
     return max(checkpoints, key=epoch)
 
 
-def read_dataset(path, label, root, minimum):
+def prepare_inference_targets(targets, output_dim):
+    values = np.asarray(targets, dtype=np.float32)
+    if values.ndim == 1:
+        values = values.reshape(-1, 1)
+    if output_dim <= 1:
+        return values[:, :1]
+    if output_dim == 2:
+        return values[:, :2]
+    return values[:, :3]
+
+
+def read_dataset(path, label, root, minimum, output_dim):
     with Path(path).open("r", newline="", encoding="utf-8") as stream:
         rows = list(csv.DictReader(stream))
     if not rows:
         raise ValueError("empty dataset: {}".format(path))
 
-    features, visibility, accuracy = [], [], []
+    features, target_values = [], []
     for row in rows:
         ripe_scores = [float(value) for value in ast.literal_eval(row["Ripe_scores"])]
         raw_scores = [float(value) for value in ast.literal_eval(row["Raw_scores"])]
@@ -65,12 +83,19 @@ def read_dataset(path, label, root, minimum):
         )
         p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
         features.append([float(row[key]) for key in ("x", "y", "yaw")])
-        visibility.append(float(len(ripe_scores) + len(raw_scores) >= minimum))
-        accuracy.append(p_ripe if label == "ripe" else 1.0 - p_ripe)
+        visibility = float(len(ripe_scores) + len(raw_scores) >= minimum)
+        raw_accuracy = 1.0 - p_ripe
+        ripe_accuracy = p_ripe
+        if output_dim <= 1:
+            target = np.asarray([raw_accuracy if label == "raw" else ripe_accuracy], dtype=np.float32)
+        elif output_dim == 2:
+            target = np.asarray([raw_accuracy, ripe_accuracy], dtype=np.float32)
+        else:
+            target = np.asarray([visibility, raw_accuracy, ripe_accuracy], dtype=np.float32)
+        target_values.append(target)
     return (
         np.asarray(features, dtype=np.float32),
-        np.asarray(visibility, dtype=np.float32),
-        np.asarray(accuracy, dtype=np.float32),
+        prepare_inference_targets(np.asarray(target_values, dtype=np.float32), output_dim),
     )
 
 
@@ -111,10 +136,12 @@ def main(args):
 
     tolerance = np.deg2rad(args.look_at_tolerance_deg)
     minimum = int(cfg.get("min_detections_for_visibility", 5))
-    datasets = (("raw", args.raw_csv, 1), ("ripe", args.ripe_csv, 2))
+    output_dim = int(cfg.get("output_dim", 3))
+    datasets = (("raw", args.raw_csv), ("ripe", args.ripe_csv))
     results = []
-    for label, path, accuracy_column in datasets:
-        features, target_v, target_k = read_dataset(path, label, root, minimum)
+    metrics = {"checkpoint": str(checkpoint), "datasets": {}}
+    for label, path in datasets:
+        features, target_values = read_dataset(path, label, root, minimum, output_dim)
         mask, _ = looking_at_tree_mask(
             features[:, 0], features[:, 1], features[:, 2], tolerance,
             np.deg2rad(args.camera_yaw_offset_deg),
@@ -123,32 +150,49 @@ def main(args):
             raise ValueError(
                 "no {} poses look at the tree; verify yaw convention or camera_yaw_offset_deg".format(label)
             )
-        features, target_v, target_k = features[mask], target_v[mask], target_k[mask]
-        prediction = infer(model, features, args.batch_size)
-        pred_v, pred_k = prediction[:, 0], prediction[:, accuracy_column]
-        visible = target_v > 0.5
-        visibility_mae = float(np.mean(np.abs(pred_v - target_v)))
-        accuracy_mae = float(np.mean(np.abs(pred_k[visible] - target_k[visible]))) if np.any(visible) else float("nan")
+        features = features[mask]
+        target_values = target_values[mask]
+        prediction = infer(model, features, args.batch_size)[:, :output_dim]
+        if output_dim <= 1:
+            head_names = [label]
+        elif output_dim == 2:
+            head_names = ["raw", "ripe"]
+        else:
+            head_names = ["visibility", "raw", "ripe"]
+        visible = target_values[:, 0] > 0.5 if target_values.shape[1] > 0 else np.zeros(len(features), dtype=bool)
         print(
-            "{}: kept {}/{} poses ({:.1f}%), visibility MAE={:.4f}, visible accuracy MAE={:.4f}".format(
-                label, int(mask.sum()), len(mask), 100.0 * mask.mean(), visibility_mae, accuracy_mae
+            "{}: kept {}/{} poses ({:.1f}%)".format(
+                label, int(mask.sum()), len(mask), 100.0 * mask.mean()
             )
         )
-        results.append((label, features, target_v, pred_v, target_k, pred_k))
+        for head_index, head_name in enumerate(head_names):
+            mae = float(np.mean(np.abs(prediction[:, head_index] - target_values[:, head_index])))
+            print("  {} MAE={:.4f}".format(head_name, mae))
+        metrics["datasets"][label] = {
+            "total_poses": int(len(mask)),
+            "looking_at_tree_poses": int(mask.sum()),
+            "looking_at_tree_fraction": float(mask.mean()),
+            "visible_looking_poses": int(visible.sum()),
+            "output_heads": head_names,
+            "target_shape": list(target_values.shape),
+        }
+        results.append((label, features, target_values, prediction, head_names))
 
-    fig, axes = plt.subplots(2, 4, figsize=(18, 9), constrained_layout=True)
+    fig, axes = plt.subplots(
+        len(results),
+        max(1, 2 * output_dim),
+        figsize=(4.2 * max(1, 2 * output_dim), 3.2 * len(results)),
+        squeeze=False,
+        constrained_layout=True,
+    )
     last_scatter = None
-    for row, (label, features, target_v, pred_v, target_k, pred_k) in enumerate(results):
-        values = (target_v, pred_v, target_k, pred_k)
-        titles = (
-            "{} dataset visibility".format(label),
-            "{} MLP visibility".format(label),
-            "{} dataset accuracy".format(label),
-            "{} MLP accuracy".format(label),
-        )
-        for column, (value, title) in enumerate(zip(values, titles)):
-            last_scatter = plot_map(axes[row, column], features, value, title)
-    fig.colorbar(last_scatter, ax=axes, label="probability", shrink=0.85)
+    for row, (label, features, target_values, prediction, head_names) in enumerate(results):
+        for head_index, head_name in enumerate(head_names):
+            target_ax = axes[row, 2 * head_index]
+            pred_ax = axes[row, 2 * head_index + 1]
+            last_scatter = plot_map(target_ax, features, target_values[:, head_index], "{} {} target".format(label, head_name))
+            last_scatter = plot_map(pred_ax, features, prediction[:, head_index], "{} {} prediction".format(label, head_name))
+    fig.colorbar(last_scatter, ax=axes.ravel().tolist(), label="probability", shrink=0.85)
     fig.suptitle(
         "Structured perception inference — poses looking at tree (±{:.1f}°)\n{}".format(
             args.look_at_tolerance_deg, checkpoint
@@ -158,6 +202,9 @@ def main(args):
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(output), dpi=180)
     print("Wrote {}".format(output))
+    stats_output = Path(args.stats_output) if args.stats_output else output.with_suffix(".json")
+    stats_output.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print("Wrote {}".format(stats_output))
     if args.show:
         plt.show()
     plt.close(fig)
@@ -171,6 +218,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-dir", default=str(ROOT / "models" / "nmpc"))
     parser.add_argument("--checkpoint")
     parser.add_argument("--output", default=str(ROOT / "runs" / "mlp_inference_looking_at_tree.png"))
+    parser.add_argument("--stats-output")
     parser.add_argument("--look-at-tolerance-deg", type=float, default=10.0)
     # Dataset/Unity camera forward axis is opposite to the recorded yaw axis.
     parser.add_argument("--camera-yaw-offset-deg", type=float, default=180.0)

@@ -30,6 +30,8 @@ training:
   input_dim: 3
   # Structured outputs: [visibility, accuracy_raw, accuracy_ripe].
   output_dim: 3
+  # Supported values: structured, mse
+  loss_function: structured
   hidden_size: 64
   hidden_layers: 3
   # Must match NMPC observation_range and nn_threshold.
@@ -40,7 +42,7 @@ training:
   epochs: 20
   learning_rate: 0.001
   # An isolated fruit is not considered an observation of the whole tree.
-  min_detections_for_visibility: 5
+  min_detections_for_visibility: 3
   visibility_loss_weight: 1.0
   semantic_loss_weight: 1.0
   augment_fraction: 0.2
