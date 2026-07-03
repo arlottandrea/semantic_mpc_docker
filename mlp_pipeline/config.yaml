@@ -21,21 +21,30 @@ dataset:
   save_annotations: true
 
 training:
-  input_csv: /data/raw/no_fog/TreeDatasetCNN.csv
+  input_csvs:
+    raw: /data/raw/no_fog/TreeDatasetCNN.csv
+    ripe: /data/ripe/no_fog/TreeDatasetCNN.csv
   output_dir: /models/nmpc
   # Avoid a stale higher-epoch file being selected by the NMPC runtime.
   replace_existing_checkpoints: true
-  labels: [ripe, raw]
   input_dim: 3
-  output_dim: 2
+  # Structured outputs: [visibility, accuracy_raw, accuracy_ripe].
+  output_dim: 3
+  # Supported values: structured, mse
+  loss_function: structured
   hidden_size: 64
   hidden_layers: 3
-  threshold: 8.0
+  # Must match NMPC observation_range and nn_threshold.
+  threshold: 5.0
   gate_slope: 10.0
   validation_split: 0.35
   batch_size: 32
   epochs: 20
   learning_rate: 0.001
+  # An isolated fruit is not considered an observation of the whole tree.
+  min_detections_for_visibility: 3
+  visibility_loss_weight: 1.0
+  semantic_loss_weight: 1.0
   augment_fraction: 0.2
   augment_distance_margin: 5.0
   num_workers: 0
