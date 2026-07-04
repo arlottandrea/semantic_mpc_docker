@@ -26,3 +26,5 @@ datasets/*
 models/*
 outputs/*
 *.mp4
+.env.save
+models/rl/
