@@ -45,7 +45,7 @@ def write_config(base, path, manifest, output_csv, raw_csv, ripe_csv, model_dir,
         config["training"]["single_output_label"] = "accuracy_raw"
     elif variant in {"reformat-mlp-pipeline", "scalar"}:
         config["training"]["output_dim"] = 1
-        config["training"]["loss_function"] = "headwise_bce"
+        config["training"]["loss_function"] = "mse"
         config["training"]["single_output_label"] = "accuracy_raw"
     else:
         config["training"]["output_dim"] = int(config["training"].get("output_dim", 3))

@@ -210,8 +210,8 @@ def main(config_path):
     x, target, sources = load_training_rows(cfg, root)
     original_count = len(x)
     model_target = target[:, :3]
-    x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
-                              float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
+    #x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
+    #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
     target = np.column_stack([model_target, masks])
     checkpoint, loss, final_train_loss, final_validation_loss = train_model(

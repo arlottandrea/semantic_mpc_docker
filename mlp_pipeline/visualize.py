@@ -108,10 +108,26 @@ def infer(model, features, batch_size):
     return np.concatenate(outputs, axis=0)
 
 
-def plot_map(ax, features, values, title):
+def plot_map(ax, features, values, title, continuous=False):
+    """Plot measured samples, or a continuous interpolation of inference samples."""
+    values = np.asarray(values).reshape(-1)
+    mappable = None
+    if continuous and len(features) >= 3:
+        try:
+            mappable = ax.tricontourf(
+                features[:, 0], features[:, 1], values,
+                levels=np.linspace(0.0, 1.0, 101), cmap="viridis",
+                vmin=0.0, vmax=1.0, extend="neither",
+            )
+        except (RuntimeError, ValueError):
+            # Degenerate/collinear pose sets cannot be triangulated.
+            mappable = None
     scatter = ax.scatter(
-        features[:, 0], features[:, 1], c=values, s=22,
-        cmap="viridis", vmin=0.0, vmax=1.0, edgecolors="none",
+        features[:, 0], features[:, 1], c=values,
+        s=12 if continuous else 28, cmap="viridis", vmin=0.0, vmax=1.0,
+        edgecolors="none" if continuous else "black",
+        linewidths=0.0 if continuous else 0.25,
+        alpha=0.35 if continuous else 1.0,
     )
     ax.scatter([0.0], [0.0], marker="*", s=130, c="red", label="tree")
     ax.set_title(title)
@@ -119,7 +135,17 @@ def plot_map(ax, features, values, title):
     ax.set_ylabel("drone y relative to tree [m]")
     ax.set_aspect("equal", adjustable="box")
     ax.grid(alpha=0.2)
-    return scatter
+    return mappable if mappable is not None else scatter
+
+
+def value_statistics(values):
+    values = np.asarray(values, dtype=float).reshape(-1)
+    return {
+        "minimum": float(values.min()),
+        "maximum": float(values.max()),
+        "mean": float(values.mean()),
+        "standard_deviation": float(values.std()),
+    }
 
 
 def main(args):
@@ -159,7 +185,9 @@ def main(args):
             head_names = ["raw", "ripe"]
         else:
             head_names = ["visibility", "raw", "ripe"]
-        visible = target_values[:, 0] > 0.5 if target_values.shape[1] > 0 else np.zeros(len(features), dtype=bool)
+        visible = None
+        if output_dim >= 3:
+            visible = target_values[:, 0] > 0.5
         print(
             "{}: kept {}/{} poses ({:.1f}%)".format(
                 label, int(mask.sum()), len(mask), 100.0 * mask.mean()
@@ -172,10 +200,21 @@ def main(args):
             "total_poses": int(len(mask)),
             "looking_at_tree_poses": int(mask.sum()),
             "looking_at_tree_fraction": float(mask.mean()),
-            "visible_looking_poses": int(visible.sum()),
             "output_heads": head_names,
             "target_shape": list(target_values.shape),
+            "heads": {
+                head_name: {
+                    "dataset": value_statistics(target_values[:, head_index]),
+                    "inference": value_statistics(prediction[:, head_index]),
+                    "mae": float(np.mean(np.abs(
+                        prediction[:, head_index] - target_values[:, head_index]
+                    ))),
+                }
+                for head_index, head_name in enumerate(head_names)
+            },
         }
+        if visible is not None:
+            metrics["datasets"][label]["visible_looking_poses"] = int(visible.sum())
         results.append((label, features, target_values, prediction, head_names))
 
     fig, axes = plt.subplots(
@@ -190,8 +229,14 @@ def main(args):
         for head_index, head_name in enumerate(head_names):
             target_ax = axes[row, 2 * head_index]
             pred_ax = axes[row, 2 * head_index + 1]
-            last_scatter = plot_map(target_ax, features, target_values[:, head_index], "{} {} target".format(label, head_name))
-            last_scatter = plot_map(pred_ax, features, prediction[:, head_index], "{} {} prediction".format(label, head_name))
+            plot_map(
+                target_ax, features, target_values[:, head_index],
+                "{} {} dataset samples".format(label, head_name),
+            )
+            last_scatter = plot_map(
+                pred_ax, features, prediction[:, head_index],
+                "{} {} inference surface".format(label, head_name), continuous=True,
+            )
     fig.colorbar(last_scatter, ax=axes.ravel().tolist(), label="probability", shrink=0.85)
     fig.suptitle(
         "Structured perception inference — poses looking at tree (±{:.1f}°)\n{}".format(
@@ -221,7 +266,7 @@ if __name__ == "__main__":
     parser.add_argument("--stats-output")
     parser.add_argument("--look-at-tolerance-deg", type=float, default=10.0)
     # Dataset/Unity camera forward axis is opposite to the recorded yaw axis.
-    parser.add_argument("--camera-yaw-offset-deg", type=float, default=180.0)
+    parser.add_argument("--camera-yaw-offset-deg", type=float, default=0.0)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--show", action="store_true")
     main(parser.parse_args())
