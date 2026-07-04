@@ -166,7 +166,14 @@ always use the same sampled heading.
 
 Run the reporter after the controller batches have finished. The recommended input is
 the local telemetry mounted from host `runs/` to container `/runs`; it does not require
-a W&B account or API key. From the repository root, run:
+a W&B account or API key. The scripts are copied into the image at build time, so rebuild
+the image after pulling or changing the reporter. From the repository root, run:
+
+```bash
+docker compose build baseline
+```
+
+Then generate the report:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint python baseline \

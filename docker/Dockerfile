@@ -61,6 +61,7 @@ RUN ln -sfn /usr/bin/python3 /usr/local/bin/python \
 
 USER app
 ENV HOME=/home/app \
+    MPLCONFIGDIR=/tmp/matplotlib \
     ROS_MASTER_URI=http://127.0.0.1:11311 \
     ROS_IP=127.0.0.1 \
     PYTHONUNBUFFERED=1
