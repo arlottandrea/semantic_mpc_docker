@@ -5,7 +5,8 @@ hidden_size: 64
 hidden_layers: 3
 nn_input_dim: 3
 nn_output_dim: 2
-nn_threshold: 8.0
+# The surrogate confidence gate must match the RL observation range.
+nn_threshold: 5.0
 nn_gate_slope: 10.0
 model_device: "cuda"
 model_labels: ["ripe", "raw"]
@@ -14,12 +15,12 @@ mpc_horizon: 5
 state_dim: 3
 control_dim: 3
 optimizer_state_dim: 6
-num_target_trees: 10
-num_obstacle_trees: 2
+# Match the RL policy observation cardinality (k_obs=5). Padded target slots
+# are explicitly masked and do not duplicate objective weight.
+num_target_trees: 5
+num_obstacle_trees: 5
 sim_steps: 1200
 belief_update_period: 1
-entropy_stop_threshold: 0.025
-entropy_selection_threshold: 0.025
 initial_pose_margin: 1.5
 initial_pose_sleep: 1.5
 wait_sleep: 0.05
@@ -27,13 +28,14 @@ loop_extra_sleep: 0.0
 
 field_margin: 3.0
 max_heading_abs: 9.42477796077
-q_dist: 0.001
-r_xy: 0.01
-r_theta: 0.01
-entropy_weight: 40.0
-entropy_objective_scale: 10.0
-attraction_threshold_sq_dist: 9.0
-attraction_sigmoid_steepness: 10.0
+# Interpretable counterparts of the RL reward. Information gain and approach
+# are benefits (subtracted by the optimizer); motion and acceleration are costs.
+movement_weight: 0.01
+yaw_movement_weight: 0.01
+acceleration_regularization_weight: 0.0001
+information_gain_weight: 1.0
+information_discount: 0.99
+attraction_weight: 0.1
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"
