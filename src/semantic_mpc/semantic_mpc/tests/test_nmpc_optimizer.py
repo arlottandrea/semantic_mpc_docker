@@ -37,6 +37,15 @@ class NmpcOptimizerTest(unittest.TestCase):
         self.assertLess(abs(uninformative - 1.0), 1e-5)
         self.assertLess(perfect, 3e-5)
 
+    def test_scalar_accuracy_outputs_expand_to_binary_likelihoods(self):
+        ripe, raw = NmpcOptimizer.observation_likelihoods(
+            ca.DM([[0.8], [0.6]]),
+            ca.DM([[0.7], [0.9]]),
+        )
+
+        np.testing.assert_allclose(np.asarray(ripe), [[0.8, 0.2], [0.6, 0.4]])
+        np.testing.assert_allclose(np.asarray(raw), [[0.3, 0.7], [0.1, 0.9]])
+
     def test_target_selection_matches_rl_and_masks_padding(self):
         trees = np.array([[5.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
         beliefs = np.array(

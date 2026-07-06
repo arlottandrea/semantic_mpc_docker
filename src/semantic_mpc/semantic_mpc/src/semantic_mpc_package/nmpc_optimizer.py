@@ -116,6 +116,31 @@ class NmpcOptimizer:
             expected_entropy += observation_probability * self.entropy_target(posterior)
         return expected_entropy
 
+    @staticmethod
+    def observation_likelihoods(class0_output, class1_output):
+        """Convert surrogate outputs to P(observation | true class).
+
+        The current scalar models predict accuracy for their own class.  Older
+        checkpoints directly emit the two observation probabilities, so keep
+        accepting that representation as well.  Class/observation order is
+        [ripe, raw].
+        """
+        if class0_output.size2() != class1_output.size2():
+            raise ValueError("ripe and raw surrogate outputs must have the same width")
+        if class0_output.size2() == 1:
+            class0_probability = ca.fmax(0.0, ca.fmin(1.0, class0_output))
+            class1_probability = ca.fmax(0.0, ca.fmin(1.0, class1_output))
+            return (
+                ca.horzcat(class0_probability, 1.0 - class0_probability),
+                ca.horzcat(1.0 - class1_probability, class1_probability),
+            )
+        if class0_output.size2() == 2:
+            return class0_output, class1_output
+        raise ValueError(
+            "surrogate outputs must have one accuracy column or two likelihood columns; "
+            "got {}".format(class0_output.size2())
+        )
+
     def mpc_opt(
         self,
         target_trees,
@@ -218,6 +243,10 @@ class NmpcOptimizer:
         nn_full_batch_input = ca.vcat(ca_batch)
         surrogate_output_ripe = self.l4c_nn[0](nn_full_batch_input)
         surrogate_output_raw = self.l4c_nn[1](nn_full_batch_input)
+        surrogate_output_ripe, surrogate_output_raw = self.observation_likelihoods(
+            surrogate_output_ripe,
+            surrogate_output_raw,
+        )
 
         for i in range(steps):
             start = i * self.num_target_trees

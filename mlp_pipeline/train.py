@@ -209,7 +209,19 @@ def main(config_path):
     device = resolve_device(str(root.get("device", "auto")))
     x, target, sources = load_training_rows(cfg, root)
     original_count = len(x)
-    model_target = target[:, :3]
+    output_dim = int(cfg.get("output_dim", 3))
+    if output_dim == 1:
+        label = str(cfg.get("single_output_label", "accuracy_raw"))
+        target_columns = {
+            "visibility": 0,
+            "accuracy_raw": 1,
+            "accuracy_ripe": 2,
+        }
+        if label not in target_columns:
+            raise ValueError("unsupported scalar output label '{}'".format(label))
+        model_target = target[:, target_columns[label]:target_columns[label] + 1]
+    else:
+        model_target = target[:, :3]
     #x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
     #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
@@ -218,7 +230,6 @@ def main(config_path):
         x, target, cfg, device, seed
     )
     output_labels = ["visibility", "accuracy_raw", "accuracy_ripe"]
-    output_dim = int(cfg.get("output_dim", 3))
     if output_dim == 2:
         output_labels = ["accuracy_raw", "accuracy_ripe"]
     elif output_dim == 1:

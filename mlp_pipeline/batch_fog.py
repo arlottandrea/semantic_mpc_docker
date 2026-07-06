@@ -25,7 +25,7 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCENARIOS = ("01_1_75m", "02_2m", "03_3m", "04_5m", "05_100m")
+SCENARIOS = ("2m", "3m", "5m",)
 
 
 def run(command):
@@ -33,7 +33,8 @@ def run(command):
     subprocess.run([str(value) for value in command], check=True, cwd=str(ROOT))
 
 
-def write_config(base, path, manifest, output_csv, raw_csv, ripe_csv, model_dir, variant):
+def write_config(base, path, manifest, output_csv, raw_csv, ripe_csv, model_dir, variant,
+                 scalar_label=None):
     config = json.loads(json.dumps(base))
     if variant in {"3outputs-mlp", "structured3"}:
         config["training"]["output_dim"] = 3
@@ -46,7 +47,7 @@ def write_config(base, path, manifest, output_csv, raw_csv, ripe_csv, model_dir,
     elif variant in {"reformat-mlp-pipeline", "scalar"}:
         config["training"]["output_dim"] = 1
         config["training"]["loss_function"] = "mse"
-        config["training"]["single_output_label"] = "accuracy_raw"
+        config["training"]["single_output_label"] = scalar_label or "accuracy_raw"
     else:
         config["training"]["output_dim"] = int(config["training"].get("output_dim", 3))
     config["dataset"].update({
@@ -96,7 +97,7 @@ def write_summary_plot(report, output_path):
     import matplotlib.pyplot as plt
 
     names = list(report["scenarios"])
-    labels = [name.split("_", 1)[1].replace("_", ".") for name in names]
+    labels = [name.replace("_", ".") for name in names]
     values = [report["scenarios"][name] for name in names]
     x = np.arange(len(names))
     width = 0.34
@@ -151,19 +152,32 @@ def main(args):
         raw_config = run_root / "configs" / "{}_raw.yaml".format(scenario)
         ripe_config = run_root / "configs" / "{}_ripe.yaml".format(scenario)
         model_dir = model_root / scenario
+        scalar_variant = args.variant in {"reformat-mlp-pipeline", "scalar"}
+        raw_model_dir = model_dir / "raw" if scalar_variant else model_dir
+        ripe_model_dir = model_dir / "ripe" if scalar_variant else model_dir
         image_path = run_root / "{}_inference.png".format(scenario)
         visualization_stats_path = run_root / "{}_inference.json".format(scenario)
-        write_config(base, raw_config, raw_manifest, raw_csv, raw_csv, ripe_csv, model_dir, args.variant)
-        write_config(base, ripe_config, ripe_manifest, ripe_csv, raw_csv, ripe_csv, model_dir, args.variant)
+        write_config(base, raw_config, raw_manifest, raw_csv, raw_csv, ripe_csv,
+                     raw_model_dir, args.variant, "accuracy_raw")
+        write_config(base, ripe_config, ripe_manifest, ripe_csv, raw_csv, ripe_csv,
+                     ripe_model_dir, args.variant, "accuracy_ripe")
 
         if args.force_generate or not raw_csv.exists():
             run([sys.executable, ROOT / "mlp_pipeline" / "generate.py", "--config", raw_config])
         if args.force_generate or not ripe_csv.exists():
             run([sys.executable, ROOT / "mlp_pipeline" / "generate.py", "--config", ripe_config])
-        metadata_path = model_dir / "training_metadata.json"
+        metadata_path = raw_model_dir / "training_metadata.json"
         if args.force_train or not metadata_path.exists():
-            run([sys.executable, args.train_script, "--config", ripe_config])
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            run([sys.executable, args.train_script, "--config", raw_config])
+        raw_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if scalar_variant:
+            ripe_metadata_path = ripe_model_dir / "training_metadata.json"
+            if args.force_train or not ripe_metadata_path.exists():
+                run([sys.executable, args.train_script, "--config", ripe_config])
+            ripe_metadata = json.loads(ripe_metadata_path.read_text(encoding="utf-8"))
+        else:
+            ripe_metadata = raw_metadata
+        metadata = raw_metadata
         checkpoint = Path(metadata["checkpoint"])
         if args.force_visualize or not image_path.exists():
             run([
@@ -182,6 +196,10 @@ def main(args):
             "final_train_loss": metadata.get("final_train_loss"),
             "final_validation_loss": metadata.get("final_validation_loss"),
             "checkpoint": str(checkpoint),
+            "checkpoints": {
+                "raw": raw_metadata["checkpoint"],
+                "ripe": ripe_metadata["checkpoint"],
+            },
             "visualization": str(image_path),
             "visualization_stats": json.loads(
                 visualization_stats_path.read_text(encoding="utf-8")
