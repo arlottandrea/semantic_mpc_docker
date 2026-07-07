@@ -4,6 +4,44 @@ import torch
 import torch.nn.functional as F
 
 
+class ThreeClassFieldMLP(torch.nn.Module):
+    """Differentiable ``pose -> [ripe, raw, nothing]`` surrogate."""
+
+    def __init__(self, input_dim=3, hidden_size=64, hidden_layers=3):
+        super().__init__()
+        in_features = input_dim + 1 if input_dim == 3 else input_dim
+        layers = [torch.nn.Linear(in_features, hidden_size), torch.nn.GELU()]
+        for _ in range(hidden_layers - 1):
+            layers.extend([torch.nn.Linear(hidden_size, hidden_size), torch.nn.GELU()])
+        layers.append(torch.nn.Linear(hidden_size, 3))
+        self.network = torch.nn.Sequential(*layers)
+
+    def forward(self, x):
+        if x.shape[-1] == 3:
+            yaw = x[..., -1:]
+            x = torch.cat([x[..., :-1], torch.sin(yaw), torch.cos(yaw)], dim=-1)
+        return torch.softmax(self.network(x), dim=-1)
+
+
+class ReliabilityMLP(torch.nn.Module):
+    """Differentiable pose-dependent ripe/raw accuracy in [0.5, 1]."""
+
+    def __init__(self, input_dim=3, hidden_size=32, hidden_layers=2):
+        super().__init__()
+        in_features = input_dim + 1 if input_dim == 3 else input_dim
+        layers = [torch.nn.Linear(in_features, hidden_size), torch.nn.GELU()]
+        for _ in range(hidden_layers - 1):
+            layers.extend([torch.nn.Linear(hidden_size, hidden_size), torch.nn.GELU()])
+        layers.append(torch.nn.Linear(hidden_size, 1))
+        self.network = torch.nn.Sequential(*layers)
+
+    def forward(self, x):
+        if x.shape[-1] == 3:
+            yaw = x[..., -1:]
+            x = torch.cat([x[..., :-1], torch.sin(yaw), torch.cos(yaw)], dim=-1)
+        return 0.5 + 0.5 * torch.sigmoid(self.network(x))
+
+
 class ResidualBlock(torch.nn.Module):
     """Simple residual block with expansion, GELU and LayerNorm."""
     def __init__(self, dim, expansion=2, dropout=0.0):
