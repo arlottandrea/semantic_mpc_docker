@@ -29,7 +29,7 @@ training:
   replace_existing_checkpoints: true
   input_dim: 3
   # Structured outputs: [visibility, accuracy_raw, accuracy_ripe].
-  output_dim: 1
+  output_dim: 3
   # Supported values: structured, mse
   loss_function: structured
   hidden_size: 64

@@ -22,24 +22,26 @@ class ResidualBlock(torch.nn.Module):
 
 
 class MultiLayerPerceptron(torch.nn.Module):
-    """Compact, fast residual MLP producing per-head probabilities in [0,1].
+    """Compact structured surrogate producing ``[visibility, raw, ripe]``.
 
     - Inputs keep the sine/cos trick for angles: call with raw yaw radians
       and the forward will cat sin(yaw), cos(yaw) to the features.
-    - Outputs are independent probabilities (sigmoid per head). This fits
-      both scalar and multi-head targets.
+    ``visibility`` is in [0, 1]. The two class-conditional observation
+    accuracies are in [0.5, 1], where 0.5 means neutral evidence.
     """
     def __init__(
         self,
         input_dim=3,
         hidden_size=128,
         hidden_layers=2,
-        output_dim=2,
+        output_dim=3,
         threshold=8.0,
         gate_slope=10.0,
         dropout=0.0,
     ):
         super().__init__()
+        if output_dim != 3:
+            raise ValueError("structured perception model requires three outputs")
         in_features = input_dim + 1 if input_dim == 3 else input_dim
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
         self.blocks = torch.nn.ModuleList([ResidualBlock(hidden_size, expansion=2, dropout=dropout) for _ in range(hidden_layers)])
@@ -60,13 +62,11 @@ class MultiLayerPerceptron(torch.nn.Module):
         h = self.norm(h)
         logits = self.out_layer(h)
 
-        # distance-based gating (keeps behavior similar to previous model)
+        # Outside the observation range the model emits ``nothing`` with
+        # neutral ripe/raw evidence.
         distance = x[..., :2].norm(dim=-1)
         gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
-        # These heads represent observation accuracy, not an unconstrained
-        # Bernoulli probability.  Accuracy 0.5 is neutral evidence; values
-        # below 0.5 would be interpreted by Bayes as an informative inverted
-        # classifier.  The visibility gate therefore interpolates between
-        # neutral evidence and learned accuracy in [0.5, 1].
-        confidence = torch.sigmoid(logits)
-        return 0.5 + 0.5 * gate.unsqueeze(-1) * confidence
+        probability = torch.sigmoid(logits)
+        visibility = gate.unsqueeze(-1) * probability[..., :1]
+        accuracy = 0.5 + 0.5 * gate.unsqueeze(-1) * probability[..., 1:3]
+        return torch.cat([visibility, accuracy], dim=-1)

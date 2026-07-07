@@ -85,14 +85,15 @@ class NmpcOptimizerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             NmpcOptimizer.entropy_f(1, num_classes=4)
 
-    def test_scalar_accuracy_outputs_expand_to_binary_likelihoods(self):
+    def test_structured_output_expands_to_three_outcome_likelihoods(self):
         ripe, raw = NmpcOptimizer.observation_likelihoods(
-            ca.DM([[0.8], [0.6]]),
-            ca.DM([[0.7], [0.9]]),
+            ca.DM([[0.8, 0.7, 0.9], [0.0, 0.8, 0.6]])
         )
 
-        np.testing.assert_allclose(np.asarray(ripe), [[0.8, 0.2], [0.6, 0.4]])
-        np.testing.assert_allclose(np.asarray(raw), [[0.3, 0.7], [0.1, 0.9]])
+        np.testing.assert_allclose(np.asarray(ripe), [[0.2, 0.72, 0.08], [1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(np.asarray(raw), [[0.2, 0.24, 0.56], [1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(np.sum(np.asarray(ripe), axis=1), 1.0)
+        np.testing.assert_allclose(np.sum(np.asarray(raw), axis=1), 1.0)
 
     def test_horizon_entropy_propagates_sequential_bayes_updates(self):
         optimizer = object.__new__(NmpcOptimizer)
@@ -137,7 +138,7 @@ class NmpcOptimizerTest(unittest.TestCase):
         uninformative = ca.Function(
             "uninformative_test_model",
             [model_input],
-            [ca.repmat(ca.DM([[0.5, 0.5]]), batch_size, 1)],
+            [ca.repmat(ca.DM([[1.0, 0.5, 0.5]]), batch_size, 1)],
         )
         params = {
             "state_dim": 3,
@@ -165,7 +166,7 @@ class NmpcOptimizerTest(unittest.TestCase):
             "max_accel_yaw": np.pi / 2.0,
             "ipopt": {"print_level": 0, "sb": "yes", "max_iter": 100},
         }
-        optimizer = NmpcOptimizer(params, [uninformative, uninformative])
+        optimizer = NmpcOptimizer(params, uninformative)
         targets = np.array([[8.0, 0.0], [9.0, 1.0], [9.0, -1.0], [10.0, 0.0], [11.0, 0.0]])
         obstacles = np.full((5, 2), 20.0)
         result = optimizer.mpc_opt(

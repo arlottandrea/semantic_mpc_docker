@@ -185,8 +185,10 @@ class NmpcOptimizer:
         stage_entropies = []
         for class0, class1 in zip(likelihoods_if_class0, likelihoods_if_class1):
             next_branches = []
+            if class0.size2() != class1.size2():
+                raise ValueError("class likelihoods must have equal outcome counts")
             for branch_probability, branch_prior in branches:
-                for observation in range(2):
+                for observation in range(class0.size2()):
                     joint0 = branch_prior[:, 0] * class0[:, observation]
                     joint1 = branch_prior[:, 1] * class1[:, observation]
                     observation_probability = ca.fmax(eps, joint0 + joint1)
@@ -205,29 +207,29 @@ class NmpcOptimizer:
         return stage_entropies
 
     @staticmethod
-    def observation_likelihoods(class0_output, class1_output):
-        """Convert surrogate outputs to P(observation | true class).
+    def observation_likelihoods(structured_output):
+        """Build three-outcome likelihoods from ``[visibility, raw, ripe]``.
 
-        The current scalar models predict accuracy for their own class.  Older
-        checkpoints directly emit the two observation probabilities, so keep
-        accepting that representation as well.  Class/observation order is
-        [ripe, raw].
+        Outcomes are ordered ``[nothing, ripe, raw]``. ``nothing`` carries no
+        semantic information, while visible outcomes update the binary
+        ripe/raw belief using the corresponding class-conditional accuracy.
         """
-        if class0_output.size2() != class1_output.size2():
-            raise ValueError("ripe and raw surrogate outputs must have the same width")
-        if class0_output.size2() == 1:
-            class0_probability = ca.fmax(0.0, ca.fmin(1.0, class0_output))
-            class1_probability = ca.fmax(0.0, ca.fmin(1.0, class1_output))
-            return (
-                ca.horzcat(class0_probability, 1.0 - class0_probability),
-                ca.horzcat(1.0 - class1_probability, class1_probability),
-            )
-        if class0_output.size2() == 2:
-            return class0_output, class1_output
-        raise ValueError(
-            "surrogate outputs must have one accuracy column or two likelihood columns; "
-            "got {}".format(class0_output.size2())
+        if structured_output.size2() != 3:
+            raise ValueError("structured surrogate output must have three columns")
+        visibility = ca.fmax(0.0, ca.fmin(1.0, structured_output[:, 0]))
+        accuracy_raw = ca.fmax(0.5, ca.fmin(1.0, structured_output[:, 1]))
+        accuracy_ripe = ca.fmax(0.5, ca.fmin(1.0, structured_output[:, 2]))
+        likelihood_if_ripe = ca.horzcat(
+            1.0 - visibility,
+            visibility * accuracy_ripe,
+            visibility * (1.0 - accuracy_ripe),
         )
+        likelihood_if_raw = ca.horzcat(
+            1.0 - visibility,
+            visibility * (1.0 - accuracy_raw),
+            visibility * accuracy_raw,
+        )
+        return likelihood_if_ripe, likelihood_if_raw
 
     def mpc_opt(
         self,
@@ -346,11 +348,9 @@ class NmpcOptimizer:
             obj += acceleration_regularization_weight * normalized_acceleration
 
         nn_full_batch_input = ca.vcat(ca_batch)
-        surrogate_output_ripe = self.l4c_nn[0](nn_full_batch_input)
-        surrogate_output_raw = self.l4c_nn[1](nn_full_batch_input)
+        surrogate_output = self.l4c_nn(nn_full_batch_input)
         surrogate_output_ripe, surrogate_output_raw = self.observation_likelihoods(
-            surrogate_output_ripe,
-            surrogate_output_raw,
+            surrogate_output
         )
 
         likelihoods_ripe = []

@@ -38,17 +38,19 @@ class SelectModelTargetsTest(unittest.TestCase):
         # Informative MSE=0.04 and neutral MSE=0, averaged by group, not sample.
         self.assertAlmostEqual(float(mse_loss(prediction, target, 1.0, 1.0)), 0.02)
 
-    def test_accuracy_model_is_neutral_outside_range_and_never_below_half(self):
+    def test_structured_model_is_nothing_and_neutral_outside_range(self):
         model = MultiLayerPerceptron(
-            input_dim=3, hidden_size=8, hidden_layers=1, output_dim=1,
+            input_dim=3, hidden_size=8, hidden_layers=1, output_dim=3,
             threshold=5.0, gate_slope=10.0,
         ).eval()
         inputs = torch.tensor([[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]])
-        output = model(inputs).detach().numpy().reshape(-1)
+        output = model(inputs).detach().numpy()
 
-        self.assertTrue(np.all(output >= 0.5))
+        self.assertTrue(np.all(output[:, 0] >= 0.0))
+        self.assertTrue(np.all(output[:, 1:] >= 0.5))
         self.assertTrue(np.all(output <= 1.0))
-        self.assertAlmostEqual(float(output[1]), 0.5, places=6)
+        self.assertAlmostEqual(float(output[1, 0]), 0.0, places=6)
+        np.testing.assert_allclose(output[1, 1:], 0.5, atol=1e-6)
 
 
 if __name__ == "__main__":
