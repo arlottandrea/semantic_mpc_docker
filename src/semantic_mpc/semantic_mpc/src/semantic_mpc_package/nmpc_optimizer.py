@@ -16,6 +16,20 @@ class NmpcOptimizer:
         delta = left - right
         return 0.5 * (left + right - ca.sqrt(delta * delta + eps))
 
+    @staticmethod
+    def perception_features(robot_pose, tree_position):
+        """Build the exact ``[x, y, yaw]`` feature used by MLP training.
+
+        Training CSV coordinates are the drone position relative to a tree in
+        a world-aligned frame.  The yaw column is the drone heading in that
+        same frame, not the bearing to the tree.  Wrapping is differentiable
+        almost everywhere and is equivalent under the model's sin/cos yaw
+        encoding.
+        """
+        relative_position = robot_pose[:2] - tree_position[:2]
+        wrapped_yaw = ca.atan2(ca.sin(robot_pose[2]), ca.cos(robot_pose[2]))
+        return ca.horzcat(relative_position.T, wrapped_yaw)
+
     def __init__(self, params, l4c_nn):
         self.params = params
         self.l4c_nn = l4c_nn
@@ -268,7 +282,9 @@ class NmpcOptimizer:
                 distances_sq.append(
                     ca.sumsqr(diff) + (1.0 - target_mask_param[j]) * 1e6 + 1e-6
                 )
-                nn_batch.append(ca.horzcat(diff.T, X[2, i + 1]))
+                nn_batch.append(
+                    self.perception_features(X[:3, i + 1], target_param[:, j])
+                )
             ca_batch.append(ca.vcat([*nn_batch]))
 
             min_dist_sq = distances_sq[0]

@@ -6,6 +6,22 @@ from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
 
 
 class NmpcOptimizerTest(unittest.TestCase):
+    def test_perception_features_match_training_csv_structure(self):
+        robot_pose = ca.MX.sym("feature_robot_pose", 3, 1)
+        tree_position = ca.MX.sym("feature_tree_position", 2, 1)
+        features = NmpcOptimizer.perception_features(robot_pose, tree_position)
+        function = ca.Function(
+            "perception_features_test",
+            [robot_pose, tree_position],
+            [features],
+        )
+
+        result = np.asarray(
+            function(ca.DM([4.0, -1.0, 3.0 * np.pi]), ca.DM([1.5, 2.0]))
+        ).reshape(-1)
+        np.testing.assert_allclose(result[:2], [2.5, -3.0])
+        self.assertAlmostEqual(result[2], np.pi, places=6)
+
     def test_smooth_switches_approximate_positive_part_and_minimum(self):
         # Test numerically without relying on exact equality at the smoothing
         # boundary.
