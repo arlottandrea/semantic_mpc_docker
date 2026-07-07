@@ -35,6 +35,11 @@ yaw_movement_weight: 0.01
 acceleration_regularization_weight: 0.0001
 information_gain_weight: 1.0
 information_discount: 0.99
+# Gaussian covariance-map exploration. The map is evaluated analytically at
+# horizon states, avoiding grid interpolation artifacts. Covariance is
+# 4*p(ripe)*p(raw), so already-classified trees stop attracting the vehicle.
+exploration_weight: 0.25
+exploration_sigma: 5.0
 attraction_weight: 0.1
 ipopt:
   tol: 1.0e-6
@@ -60,6 +65,11 @@ tree_scores_topic: "tree_scores"
 cmd_pose_topic: "cmd/pose"
 predicted_path_topic: "predicted_path"
 tree_markers_topic: "tree_markers"
+# NMPC visualization publishers. These are independent so path and belief
+# markers can be enabled separately. The period is measured in control steps.
+publish_predicted_path: true
+publish_tree_markers: true
+visualization_publish_period: 5
 tree_service: "/obj_pose_srv"
 
 wandb_project: "semantic_mpc"

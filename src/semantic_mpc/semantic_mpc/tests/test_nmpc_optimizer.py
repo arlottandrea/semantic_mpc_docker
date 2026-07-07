@@ -55,6 +55,21 @@ class NmpcOptimizerTest(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(ripe), [[0.8, 0.2], [0.6, 0.4]])
         np.testing.assert_allclose(np.asarray(raw), [[0.3, 0.7], [0.1, 0.9]])
 
+    def test_horizon_entropy_propagates_sequential_bayes_updates(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
+        prior = ca.MX.sym("horizon_prior", 1, 2)
+        class0 = ca.DM([[0.8, 0.2]])
+        class1 = ca.DM([[0.2, 0.8]])
+        entropies = optimizer.expected_entropy_horizon(
+            prior, [class0, class0], [class1, class1]
+        )
+        function = ca.Function("horizon_entropy_test", [prior], entropies)
+        first, second = [float(value) for value in function(ca.DM([[0.5, 0.5]]))]
+
+        self.assertLess(second, first)
+        self.assertGreaterEqual(second, 0.0)
+
     def test_target_selection_matches_rl_and_masks_padding(self):
         trees = np.array([[5.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
         beliefs = np.array(
@@ -100,6 +115,8 @@ class NmpcOptimizerTest(unittest.TestCase):
             "acceleration_regularization_weight": 0.0001,
             "information_gain_weight": 1.0,
             "information_discount": 0.99,
+            "exploration_weight": 0.25,
+            "exploration_sigma": 5.0,
             "attraction_weight": 0.1,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,

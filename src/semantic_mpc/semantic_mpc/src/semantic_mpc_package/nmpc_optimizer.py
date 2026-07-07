@@ -129,6 +129,40 @@ class NmpcOptimizer:
             expected_entropy += observation_probability * self.entropy_target(posterior)
         return expected_entropy
 
+    def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
+        """Expected posterior entropy after each sequential horizon measurement.
+
+        The belief tree branches over both possible observations.  This is
+        exact for the binary model and, unlike summing one-step gains computed
+        from the same prior, does not count the same uncertainty repeatedly.
+        """
+        if len(likelihoods_if_class0) != len(likelihoods_if_class1):
+            raise ValueError("class likelihood horizons must have equal length")
+
+        eps = 1e-9
+        branches = [(ca.MX.ones(prior.size1(), 1), prior)]
+        stage_entropies = []
+        for class0, class1 in zip(likelihoods_if_class0, likelihoods_if_class1):
+            next_branches = []
+            for branch_probability, branch_prior in branches:
+                for observation in range(2):
+                    joint0 = branch_prior[:, 0] * class0[:, observation]
+                    joint1 = branch_prior[:, 1] * class1[:, observation]
+                    observation_probability = ca.fmax(eps, joint0 + joint1)
+                    posterior = ca.horzcat(
+                        joint0 / observation_probability,
+                        joint1 / observation_probability,
+                    )
+                    next_branches.append(
+                        (branch_probability * observation_probability, posterior)
+                    )
+            branches = next_branches
+            expected_entropy = ca.MX.zeros(prior.size1(), 1)
+            for branch_probability, posterior in branches:
+                expected_entropy += branch_probability * self.entropy_target(posterior)
+            stage_entropies.append(expected_entropy)
+        return stage_entropies
+
     @staticmethod
     def observation_likelihoods(class0_output, class1_output):
         """Convert surrogate outputs to P(observation | true class).
@@ -203,9 +237,11 @@ class NmpcOptimizer:
         )
         information_gain_weight = float(self.params["information_gain_weight"])
         information_discount = float(self.params["information_discount"])
+        exploration_weight = float(self.params["exploration_weight"])
+        exploration_sigma = max(float(self.params["exploration_sigma"]), 1e-6)
         attraction_weight = float(self.params["attraction_weight"])
         obj = 0
-        information_gain_by_target = ca.MX.zeros(self.num_target_trees, 1)
+        exploration_reward = 0
         terminal_min_dist_sq = None
 
         opti.subject_to(X[:, 0] == X0)
@@ -239,6 +275,19 @@ class NmpcOptimizer:
             for j in range(1, self.num_target_trees):
                 min_dist_sq = self.smooth_min(min_dist_sq, distances_sq[j])
             terminal_min_dist_sq = min_dist_sq
+            # Continuous equivalent of sampling a Gaussian covariance grid.
+            # Bernoulli covariance is maximal at p=0.5 and vanishes as a tree
+            # becomes classified.  The target mask removes padded slots.
+            target_covariance = 4.0 * L0[:, 0] * L0[:, 1]
+            gaussian_covariance = ca.MX.zeros(self.num_target_trees, 1)
+            for j in range(self.num_target_trees):
+                gaussian_covariance[j] = ca.exp(
+                    -distances_sq[j] / (2.0 * exploration_sigma ** 2)
+                )
+            exploration_reward += information_discount ** i * ca.dot(
+                target_mask_param * target_covariance,
+                gaussian_covariance,
+            ) / ca.fmax(1.0, ca.sum1(target_mask_param))
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
             )
@@ -261,27 +310,27 @@ class NmpcOptimizer:
             surrogate_output_raw,
         )
 
+        likelihoods_ripe = []
+        likelihoods_raw = []
         for i in range(steps):
             start = i * self.num_target_trees
             stop = (i + 1) * self.num_target_trees
-            expected_entropy = self.expected_posterior_entropy(
-                L0,
-                surrogate_output_ripe[start:stop, :],
-                surrogate_output_raw[start:stop, :],
-            )
-            prior_entropy = self.entropy_target(L0)
-            information_gain_by_target += information_discount ** i * self.smooth_positive(
-                prior_entropy - expected_entropy
-            )
+            likelihoods_ripe.append(surrogate_output_ripe[start:stop, :])
+            likelihoods_raw.append(surrogate_output_raw[start:stop, :])
 
-        # Multiple predicted observations may concern the same tree. Cap their
-        # accumulated information by the tree's current entropy, since no
-        # planner can remove more uncertainty than is present initially.
-        bounded_information_gain = self.smooth_min(
-            self.entropy_target(L0),
-            information_gain_by_target,
+        stage_entropies = self.expected_entropy_horizon(
+            L0, likelihoods_ripe, likelihoods_raw
         )
-        information_gain_objective = ca.dot(target_mask_param, bounded_information_gain) / ca.fmax(
+        previous_entropy = self.entropy_target(L0)
+        discounted_information_gain = ca.MX.zeros(self.num_target_trees, 1)
+        for i, expected_entropy in enumerate(stage_entropies):
+            discounted_information_gain += information_discount ** i * self.smooth_positive(
+                previous_entropy - expected_entropy
+            )
+            previous_entropy = expected_entropy
+        information_gain_objective = ca.dot(
+            target_mask_param, discounted_information_gain
+        ) / ca.fmax(
             1.0,
             ca.sum1(target_mask_param),
         )
@@ -293,6 +342,7 @@ class NmpcOptimizer:
         opti.minimize(
             obj
             - information_gain_weight * information_gain_objective
+            - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
@@ -308,6 +358,37 @@ class NmpcOptimizer:
             ca.reshape(ca.DM(obstacle_trees), 2 * self.num_obstacle_trees, 1),
         )
         opti.set_value(P0, p0_val)
+
+        # A zero control sequence is a common stationary point of radial
+        # neural/grid potentials.  Give the cold solve a feasible-dynamics
+        # directional seed toward the nearest active uncertain target.
+        x0_np = np.asarray(x0, dtype=float).reshape(-1)
+        target_np = np.asarray(target_trees, dtype=float).reshape(self.num_target_trees, 2)
+        mask_np = np.asarray(target_mask, dtype=float).reshape(-1) > 0.5
+        u_seed = np.zeros((self.n_control, steps), dtype=float)
+        x_seed = np.zeros((self.n_state, steps + 1), dtype=float)
+        x_seed[:, 0] = x0_np
+        if np.any(mask_np):
+            active_targets = target_np[mask_np]
+            nearest = active_targets[
+                np.argmin(np.linalg.norm(active_targets - x0_np[:2], axis=1))
+            ]
+            direction = nearest - x0_np[:2]
+            direction_norm = np.linalg.norm(direction)
+            if direction_norm > 1e-9:
+                u_seed[:2, :] = (
+                    0.5 * float(self.params["max_accel_xy"]) * direction / direction_norm
+                )[:, None]
+        for i in range(steps):
+            acceleration = u_seed[:, i]
+            x_seed[:3, i + 1] = (
+                x_seed[:3, i]
+                + self.dt * x_seed[3:, i]
+                + 0.5 * self.dt ** 2 * acceleration
+            )
+            x_seed[3:, i + 1] = x_seed[3:, i] + self.dt * acceleration
+        opti.set_initial(U, u_seed)
+        opti.set_initial(X, x_seed)
 
         sol = opti.solve()
         mpc_step_func = opti.to_function(

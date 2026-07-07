@@ -237,10 +237,11 @@ class NeuralMPC:
             current_state = self._wait_for_robot_state()
             x_k = ca.vertcat(ca.DM(current_state), vx_k)
 
-            if last_score_sequence == 0:
-                scores, score_sequence = self.ros.wait_for_new_tree_scores(last_score_sequence)
-            else:
-                scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
+            # Perception is asynchronous.  The controller can plan from the
+            # current prior before the first score arrives; blocking here used
+            # to leave the drone stationary whenever the detector was late or
+            # temporarily unavailable.
+            scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
             if (
                 scores is not None
                 and self.belief_update_period > 0
