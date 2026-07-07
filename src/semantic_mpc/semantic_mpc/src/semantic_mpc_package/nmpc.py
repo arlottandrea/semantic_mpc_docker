@@ -14,6 +14,7 @@ from semantic_mpc_package.baselines import resolve_mower_heading
 from semantic_mpc_package.nmpc_config import default_nmpc_params, load_semantic_mpc_params
 from semantic_mpc_package.nmpc_model import load_l4casadi_model
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
+from semantic_mpc_package.planning import GaussianProcessCoverage, RRTWaypointPlanner
 from semantic_mpc_package.ros_com_lib.sensors import (
     create_path_from_mpc_prediction,
     create_tree_markers,
@@ -68,6 +69,31 @@ class NeuralMPC:
         self.beliefs_k = ca.DM.ones(self.num_total_trees, 2) * 0.5
         self._previous_measured_pose = None
         self._estimated_velocity = np.zeros(3, dtype=float)
+        self.use_gp_rrt_waypoint = bool(self.params.get("use_gp_rrt_waypoint", True))
+        self.current_waypoint = None
+        if self.use_gp_rrt_waypoint:
+            lb, ub = get_domain(self.trees_pos)
+            margin = float(self.params.get("field_margin", 3.0))
+            bounds = np.array(
+                [
+                    [lb[0] - margin, ub[0] + margin],
+                    [lb[1] - margin, ub[1] + margin],
+                ],
+                dtype=float,
+            )
+            self.waypoint_coverage = GaussianProcessCoverage(
+                bounds=bounds,
+                resolution=float(self.params.get("gp_resolution", 1.0)),
+                kernel_scale=float(self.params.get("gp_kernel_scale", 3.0)),
+            )
+            self.waypoint_planner = RRTWaypointPlanner(
+                bounds=bounds,
+                resolution=float(self.params.get("gp_resolution", 1.0)),
+                max_nodes=int(self.params.get("rrt_max_nodes", 120)),
+            )
+        else:
+            self.waypoint_coverage = None
+            self.waypoint_planner = None
 
     def _load_runtime_params(self):
         self.N = int(self.params["mpc_horizon"])
@@ -213,6 +239,40 @@ class NeuralMPC:
             self.belief_tracking_threshold,
         )
 
+    def update_waypoint_planner(self, current_state, scores=None, update_mask=None):
+        if not self.use_gp_rrt_waypoint or self.waypoint_coverage is None:
+            return None
+        if self.current_waypoint is not None:
+            distance_to_current = np.linalg.norm(
+                np.asarray(self.current_waypoint[:2], dtype=float) - np.asarray(current_state[:2], dtype=float)
+            )
+            if distance_to_current <= float(self.params.get("waypoint_replan_distance", 2.0)):
+                return self.current_waypoint
+        self.waypoint_coverage.observe(float(current_state[0]), float(current_state[1]), value=0.75)
+        if scores is not None and update_mask is not None:
+            observed_indices = np.flatnonzero(np.asarray(update_mask, dtype=bool))
+            for idx in observed_indices:
+                tree_pos = self.trees_pos[idx]
+                self.waypoint_coverage.observe(float(tree_pos[0]), float(tree_pos[1]), value=0.95)
+        waypoints = self.waypoint_planner.plan(
+            start_pose=current_state,
+            coverage=self.waypoint_coverage,
+            target_count=int(self.params.get("rrt_target_count", 1)),
+        )
+        if waypoints:
+            waypoint = np.asarray(waypoints[0], dtype=float)
+            uncertainty = float(self.waypoint_coverage.informative_score(waypoint[0], waypoint[1]))
+            belief_uncertainty = float(np.mean(np.max(np.asarray(self.beliefs_k.full()), axis=1) < self.belief_tracking_threshold))
+            adaptive_value = max(
+                float(self.params.get("waypoint_min_weight_scale", 0.25)),
+                0.5 + float(self.params.get("waypoint_uncertainty_gain", 2.0)) * uncertainty + belief_uncertainty,
+            )
+            waypoint = np.append(waypoint, adaptive_value)
+            self.current_waypoint = waypoint
+            return self.current_waypoint
+        self.current_waypoint = None
+        return None
+
     def get_nearest_tree_indices(self, robot_position, num_obstacle=None):
         num_obstacle = self.num_obstacle_trees if num_obstacle is None else num_obstacle
         robot_pos = np.array(robot_position).flatten()
@@ -295,6 +355,7 @@ class NeuralMPC:
             # to leave the drone stationary whenever the detector was late or
             # temporarily unavailable.
             scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
+            update_mask = None
             if (
                 scores is not None
                 and self.belief_update_period > 0
@@ -318,6 +379,7 @@ class NeuralMPC:
                     rospy.logerr_throttle(5.0, "Skipping invalid tree-score evidence: %s", exc)
                 else:
                     self.beliefs_k = ca.DM(beliefs)
+            waypoint = self.update_waypoint_planner(current_state, scores=scores, update_mask=update_mask)
 
             tracked = np.max(np.asarray(self.beliefs_k.full()), axis=1) >= self.belief_tracking_threshold
             if bool(np.all(tracked)):
@@ -350,6 +412,7 @@ class NeuralMPC:
                         ub,
                         x_k,
                         steps=self.N,
+                        waypoint=waypoint,
                     )
                     warm_start = False
                 else:

@@ -304,6 +304,7 @@ class NmpcOptimizer:
         ub,
         x0,
         steps=None,
+        waypoint=None,
     ):
         steps = self.horizon if steps is None else steps
         opti = ca.Opti()
@@ -479,6 +480,15 @@ class NmpcOptimizer:
         terminal_distance_excess = self.smooth_positive(
             ca.sqrt(self.smooth_positive(terminal_min_dist_sq)) - observation_range
         )
+        waypoint_cost = ca.MX.zeros(1, 1)
+        if waypoint is not None:
+            waypoint_xy = ca.DM(np.asarray(waypoint, dtype=float).reshape(-1)[:2])
+            base_weight = float(self.params.get("waypoint_attraction_weight", 0.25))
+            adaptive_weight = base_weight * max(
+                float(self.params.get("waypoint_min_weight_scale", 0.25)),
+                float(waypoint[2]) if len(waypoint) > 2 else 1.0,
+            )
+            waypoint_cost = adaptive_weight * ca.sumsqr(X[:2, -1] - waypoint_xy)
 
         opti.minimize(
             obj
@@ -487,6 +497,7 @@ class NmpcOptimizer:
             + attraction_weight * terminal_distance_excess
             + camera_facing_weight * terminal_camera_cost
             + observation_standoff_weight * terminal_standoff_cost
+            + waypoint_cost
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
         opti.solver("ipopt", options)
