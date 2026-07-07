@@ -70,8 +70,30 @@ def structured_loss(prediction, target, visibility_weight, semantic_weight):
 
 
 def mse_loss(prediction, target, visibility_weight, semantic_weight):
-    output_dim = min(prediction.shape[1], target.shape[1])
-    return torch.nn.functional.mse_loss(prediction[:, :output_dim], target[:, :output_dim])
+    output_dim = int(prediction.shape[1])
+    if output_dim >= 3:
+        target_value = target[:, :3]
+    elif output_dim == 2:
+        target_value = target[:, 1:3]
+    else:
+        target_value = target[:, 1:2]
+    elementwise = torch.nn.functional.mse_loss(
+        prediction[:, :output_dim], target_value, reduction="none"
+    )
+    if output_dim == 1:
+        mask = target[:, 0:1]
+        active = mask > 0.5
+        informative = active & (target_value > 0.500001)
+        neutral = active & ~informative
+        group_losses = []
+        if torch.any(neutral):
+            group_losses.append(elementwise[neutral].mean())
+        if torch.any(informative):
+            group_losses.append(elementwise[informative].mean())
+        if not group_losses:
+            return elementwise.sum() * 0.0
+        return torch.stack(group_losses).mean()
+    return elementwise.mean()
 
 
 def headwise_bce_loss(prediction, target, visibility_weight, semantic_weight):
@@ -196,9 +218,34 @@ def load_training_rows(cfg, root):
             p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
             features.append([float(row[k]) for k in ("x", "y", "yaw")])
             # Last two values are training-only masks for the physical class.
-            targets.append([visible, 1.0 - p_ripe, p_ripe,
+            targets.append([visible, max(0.5, 1.0 - p_ripe), max(0.5, p_ripe),
                             float(class_id == 0), float(class_id == 1)])
     return np.asarray(features, dtype=np.float32), np.asarray(targets, dtype=np.float32), sources
+
+
+def select_model_targets(target, cfg):
+    """Keep the loss target layout consistent for every model width.
+
+    Scalar conditional models use their physical-class mask in column 0 and
+    selected accuracy in column 1. Wider models retain the shared structured
+    target layout.
+    """
+    output_dim = int(cfg.get("output_dim", 3))
+    if output_dim == 1:
+        label = str(cfg.get("single_output_label", "accuracy_raw"))
+        target_columns = {
+            "visibility": 0,
+            "accuracy_raw": 1,
+            "accuracy_ripe": 2,
+        }
+        if label not in target_columns:
+            raise ValueError("unsupported scalar output label '{}'".format(label))
+        if label == "visibility":
+            class_mask = np.ones(len(target), dtype=target.dtype)
+        else:
+            class_mask = target[:, 3 if label == "accuracy_raw" else 4]
+        return np.column_stack([class_mask, target[:, target_columns[label]]])
+    return target[:, :3]
 
 
 def main(config_path):
@@ -210,18 +257,7 @@ def main(config_path):
     x, target, sources = load_training_rows(cfg, root)
     original_count = len(x)
     output_dim = int(cfg.get("output_dim", 3))
-    if output_dim == 1:
-        label = str(cfg.get("single_output_label", "accuracy_raw"))
-        target_columns = {
-            "visibility": 0,
-            "accuracy_raw": 1,
-            "accuracy_ripe": 2,
-        }
-        if label not in target_columns:
-            raise ValueError("unsupported scalar output label '{}'".format(label))
-        model_target = target[:, target_columns[label]:target_columns[label] + 1]
-    else:
-        model_target = target[:, :3]
+    model_target = select_model_targets(target, cfg)
     #x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
     #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])

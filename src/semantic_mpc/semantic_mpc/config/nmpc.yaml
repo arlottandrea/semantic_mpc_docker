@@ -4,7 +4,7 @@ run_dir: "/runs/nmpc_runs"
 hidden_size: 64
 hidden_layers: 3
 nn_input_dim: 3
-nn_output_dim: 2
+nn_output_dim: 1
 # The surrogate confidence gate must match the RL observation range.
 nn_threshold: 5.0
 nn_gate_slope: 10.0

@@ -185,6 +185,8 @@ def main(args):
                 "--config", ripe_config,
                 "--raw-csv", raw_csv,
                 "--ripe-csv", ripe_csv,
+                "--raw-checkpoint", raw_metadata["checkpoint"],
+                "--ripe-checkpoint", ripe_metadata["checkpoint"],
                 "--checkpoint", checkpoint,
                 "--output", image_path,
                 "--stats-output", visualization_stats_path,

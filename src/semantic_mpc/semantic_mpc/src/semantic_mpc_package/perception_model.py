@@ -63,7 +63,10 @@ class MultiLayerPerceptron(torch.nn.Module):
         # distance-based gating (keeps behavior similar to previous model)
         distance = x[..., :2].norm(dim=-1)
         gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
-        logits = logits * gate.unsqueeze(-1)
-
-        # independent probabilities per head in [0,1]
-        return torch.sigmoid(logits)
+        # These heads represent observation accuracy, not an unconstrained
+        # Bernoulli probability.  Accuracy 0.5 is neutral evidence; values
+        # below 0.5 would be interpreted by Bayes as an informative inverted
+        # classifier.  The visibility gate therefore interpolates between
+        # neutral evidence and learned accuracy in [0.5, 1].
+        confidence = torch.sigmoid(logits)
+        return 0.5 + 0.5 * gate.unsqueeze(-1) * confidence

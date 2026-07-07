@@ -84,8 +84,8 @@ def read_dataset(path, label, root, minimum, output_dim):
         p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
         features.append([float(row[key]) for key in ("x", "y", "yaw")])
         visibility = float(len(ripe_scores) + len(raw_scores) >= minimum)
-        raw_accuracy = 1.0 - p_ripe
-        ripe_accuracy = p_ripe
+        raw_accuracy = max(0.5, 1.0 - p_ripe)
+        ripe_accuracy = max(0.5, p_ripe)
         if output_dim <= 1:
             target = np.asarray([raw_accuracy if label == "raw" else ripe_accuracy], dtype=np.float32)
         elif output_dim == 2:
@@ -108,23 +108,41 @@ def infer(model, features, batch_size):
     return np.concatenate(outputs, axis=0)
 
 
+def maximum_over_yaw(features, values):
+    """Collapse repeated (x, y, yaw) samples to max(value) at each (x, y)."""
+    features = np.asarray(features, dtype=np.float32)
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim == 1:
+        values = values.reshape(-1, 1)
+    if len(features) != len(values):
+        raise ValueError("features and values must contain the same number of poses")
+    xy, inverse = np.unique(features[:, :2], axis=0, return_inverse=True)
+    maxima = np.full((len(xy), values.shape[1]), -np.inf, dtype=np.float32)
+    np.maximum.at(maxima, inverse, values)
+    # Keep the three-column feature contract used by plotting code. Yaw is no
+    # longer meaningful after maximization.
+    return np.column_stack([xy, np.zeros(len(xy), dtype=np.float32)]), maxima
+
+
 def plot_map(ax, features, values, title, continuous=False):
     """Plot measured samples, or a continuous interpolation of inference samples."""
     values = np.asarray(values).reshape(-1)
+    color_min, color_max = 0.5, 0.99
     mappable = None
     if continuous and len(features) >= 3:
         try:
             mappable = ax.tricontourf(
                 features[:, 0], features[:, 1], values,
-                levels=np.linspace(0.0, 1.0, 101), cmap="viridis",
-                vmin=0.0, vmax=1.0, extend="neither",
+                levels=np.linspace(color_min, color_max, 100), cmap="viridis",
+                vmin=color_min, vmax=color_max, extend="neither",
             )
         except (RuntimeError, ValueError):
             # Degenerate/collinear pose sets cannot be triangulated.
             mappable = None
     scatter = ax.scatter(
         features[:, 0], features[:, 1], c=values,
-        s=12 if continuous else 28, cmap="viridis", vmin=0.0, vmax=1.0,
+        s=12 if continuous else 28, cmap="viridis",
+        vmin=color_min, vmax=color_max,
         edgecolors="none" if continuous else "black",
         linewidths=0.0 if continuous else 0.25,
         alpha=0.35 if continuous else 1.0,
@@ -148,37 +166,41 @@ def value_statistics(values):
     }
 
 
-def main(args):
-    root = load_config(args.config)
-    cfg = root["training"]
-    checkpoint = Path(args.checkpoint) if args.checkpoint else latest_checkpoint(args.model_dir)
+def load_model(cfg, checkpoint):
     model = MultiLayerPerceptron(
         input_dim=int(cfg["input_dim"]), hidden_size=int(cfg["hidden_size"]),
         hidden_layers=int(cfg["hidden_layers"]), output_dim=int(cfg["output_dim"]),
         threshold=float(cfg["threshold"]), gate_slope=float(cfg["gate_slope"]),
     )
     model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
-    model.eval()
+    return model.eval()
 
-    tolerance = np.deg2rad(args.look_at_tolerance_deg)
+
+def main(args):
+    root = load_config(args.config)
+    cfg = root["training"]
+    checkpoint = Path(args.checkpoint) if args.checkpoint else latest_checkpoint(args.model_dir)
+    checkpoints = {
+        "raw": Path(args.raw_checkpoint) if args.raw_checkpoint else checkpoint,
+        "ripe": Path(args.ripe_checkpoint) if args.ripe_checkpoint else checkpoint,
+    }
+
     minimum = int(cfg.get("min_detections_for_visibility", 5))
     output_dim = int(cfg.get("output_dim", 3))
     datasets = (("raw", args.raw_csv), ("ripe", args.ripe_csv))
     results = []
-    metrics = {"checkpoint": str(checkpoint), "datasets": {}}
+    metrics = {
+        "checkpoints": {label: str(path) for label, path in checkpoints.items()},
+        "datasets": {},
+    }
     for label, path in datasets:
+        model = load_model(cfg, checkpoints[label])
         features, target_values = read_dataset(path, label, root, minimum, output_dim)
-        mask, _ = looking_at_tree_mask(
-            features[:, 0], features[:, 1], features[:, 2], tolerance,
-            np.deg2rad(args.camera_yaw_offset_deg),
-        )
-        if not np.any(mask):
-            raise ValueError(
-                "no {} poses look at the tree; verify yaw convention or camera_yaw_offset_deg".format(label)
-            )
-        features = features[mask]
-        target_values = target_values[mask]
         prediction = infer(model, features, args.batch_size)[:, :output_dim]
+        total_poses = len(features)
+        pose_features = features
+        features, target_values = maximum_over_yaw(features, target_values)
+        _, prediction = maximum_over_yaw(pose_features, prediction)
         if output_dim <= 1:
             head_names = [label]
         elif output_dim == 2:
@@ -189,17 +211,17 @@ def main(args):
         if output_dim >= 3:
             visible = target_values[:, 0] > 0.5
         print(
-            "{}: kept {}/{} poses ({:.1f}%)".format(
-                label, int(mask.sum()), len(mask), 100.0 * mask.mean()
+            "{}: collapsed {} poses to {} (x, y) points using max over yaw".format(
+                label, total_poses, len(features)
             )
         )
         for head_index, head_name in enumerate(head_names):
             mae = float(np.mean(np.abs(prediction[:, head_index] - target_values[:, head_index])))
             print("  {} MAE={:.4f}".format(head_name, mae))
         metrics["datasets"][label] = {
-            "total_poses": int(len(mask)),
-            "looking_at_tree_poses": int(mask.sum()),
-            "looking_at_tree_fraction": float(mask.mean()),
+            "total_poses": int(total_poses),
+            "xy_points": int(len(features)),
+            "yaw_reduction": "maximum",
             "output_heads": head_names,
             "target_shape": list(target_values.shape),
             "heads": {
@@ -214,7 +236,7 @@ def main(args):
             },
         }
         if visible is not None:
-            metrics["datasets"][label]["visible_looking_poses"] = int(visible.sum())
+            metrics["datasets"][label]["visible_xy_points"] = int(visible.sum())
         results.append((label, features, target_values, prediction, head_names))
 
     fig, axes = plt.subplots(
@@ -239,9 +261,8 @@ def main(args):
             )
     fig.colorbar(last_scatter, ax=axes.ravel().tolist(), label="probability", shrink=0.85)
     fig.suptitle(
-        "Structured perception inference — poses looking at tree (±{:.1f}°)\n{}".format(
-            args.look_at_tolerance_deg, checkpoint
-        )
+        "Structured perception inference — maximum over yaw at each (x, y)\n"
+        "raw: {} | ripe: {}".format(checkpoints["raw"], checkpoints["ripe"])
     )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +283,8 @@ if __name__ == "__main__":
     parser.add_argument("--ripe-csv", default=str(ROOT / "datasets" / "ripe" / "no_fog" / "TreeDatasetCNN.csv"))
     parser.add_argument("--model-dir", default=str(ROOT / "models" / "nmpc"))
     parser.add_argument("--checkpoint")
+    parser.add_argument("--raw-checkpoint")
+    parser.add_argument("--ripe-checkpoint")
     parser.add_argument("--output", default=str(ROOT / "runs" / "mlp_inference_looking_at_tree.png"))
     parser.add_argument("--stats-output")
     parser.add_argument("--look-at-tolerance-deg", type=float, default=10.0)

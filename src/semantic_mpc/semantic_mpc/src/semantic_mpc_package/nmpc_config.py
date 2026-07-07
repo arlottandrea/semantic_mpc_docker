@@ -17,7 +17,7 @@ def default_nmpc_params():
         "hidden_size": 64,
         "hidden_layers": 3,
         "nn_input_dim": 3,
-        "nn_output_dim": 2,
+        "nn_output_dim": 1,
         "nn_threshold": 5.0,
         "nn_gate_slope": 10.0,
         "model_device": "cuda",
