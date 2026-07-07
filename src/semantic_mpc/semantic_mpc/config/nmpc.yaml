@@ -41,6 +41,11 @@ information_discount: 0.99
 exploration_weight: 0.25
 exploration_sigma: 5.0
 attraction_weight: 0.1
+# Smooth terminal orientation prior. Offset is camera forward axis relative to
+# robot yaw (0 for forward-facing, pi for rear-facing cameras).
+camera_facing_weight: 0.5
+camera_yaw_offset: 0.0
+camera_activation_sigma: 5.0
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"

@@ -17,6 +17,16 @@ class NmpcOptimizer:
         return 0.5 * (left + right - ca.sqrt(delta * delta + eps))
 
     @staticmethod
+    def camera_facing_error(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Smooth periodic cost: zero when the camera points at the tree."""
+        direction_to_tree = ca.atan2(
+            tree_position[1] - robot_pose[1],
+            tree_position[0] - robot_pose[0],
+        )
+        error = direction_to_tree - robot_pose[2] - camera_yaw_offset
+        return 1.0 - ca.cos(error)
+
+    @staticmethod
     def perception_features(robot_pose, tree_position):
         """Build the exact ``[x, y, yaw]`` feature used by MLP training.
 
@@ -271,9 +281,15 @@ class NmpcOptimizer:
         exploration_weight = float(self.params["exploration_weight"])
         exploration_sigma = max(float(self.params["exploration_sigma"]), 1e-6)
         attraction_weight = float(self.params["attraction_weight"])
+        camera_facing_weight = float(self.params["camera_facing_weight"])
+        camera_yaw_offset = float(self.params["camera_yaw_offset"])
+        camera_activation_sigma = max(
+            float(self.params["camera_activation_sigma"]), 1e-6
+        )
         obj = 0
         exploration_reward = 0
         terminal_min_dist_sq = None
+        terminal_camera_cost = 0.0
 
         opti.subject_to(X[:, 0] == X0)
         ca_batch = []
@@ -321,6 +337,23 @@ class NmpcOptimizer:
                 target_mask_param * target_covariance,
                 gaussian_covariance,
             ) / ca.fmax(1.0, ca.sum1(target_mask_param))
+            if i == steps - 1:
+                camera_weights = ca.MX.zeros(self.num_target_trees, 1)
+                camera_errors = ca.MX.zeros(self.num_target_trees, 1)
+                for j in range(self.num_target_trees):
+                    camera_weights[j] = (
+                        target_mask_param[j]
+                        * target_covariance[j]
+                        * ca.exp(
+                            -distances_sq[j] / (2.0 * camera_activation_sigma ** 2)
+                        )
+                    )
+                    camera_errors[j] = self.camera_facing_error(
+                        X[:3, i + 1], target_param[:, j], camera_yaw_offset
+                    )
+                terminal_camera_cost = ca.dot(camera_weights, camera_errors) / ca.fmax(
+                    1e-8, ca.sum1(camera_weights)
+                )
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
             )
@@ -381,6 +414,7 @@ class NmpcOptimizer:
             - information_gain_weight * information_gain_objective
             - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
+            + camera_facing_weight * terminal_camera_cost
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
         opti.solver("ipopt", options)

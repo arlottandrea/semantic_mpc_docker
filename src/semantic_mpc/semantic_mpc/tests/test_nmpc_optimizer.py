@@ -31,6 +31,19 @@ class NmpcOptimizerTest(unittest.TestCase):
             float(NmpcOptimizer.smooth_min(ca.DM(2.0), ca.DM(3.0))), 2.0, places=6
         )
 
+    def test_camera_facing_error_is_periodic_and_directional(self):
+        robot = ca.DM([0.0, 0.0, 0.0])
+        self.assertAlmostEqual(
+            float(NmpcOptimizer.camera_facing_error(robot, ca.DM([1.0, 0.0]))),
+            0.0,
+            places=7,
+        )
+        self.assertAlmostEqual(
+            float(NmpcOptimizer.camera_facing_error(robot, ca.DM([-1.0, 0.0]))),
+            2.0,
+            places=7,
+        )
+
     def test_bayes_numpy_is_normalized_and_respects_mask(self):
         prior = np.array([[0.5, 0.5], [0.8, 0.2]])
         likelihood = np.array([[0.9, 0.1], [0.0, 0.0]])
@@ -163,6 +176,9 @@ class NmpcOptimizerTest(unittest.TestCase):
             "exploration_weight": 0.25,
             "exploration_sigma": 5.0,
             "attraction_weight": 0.1,
+            "camera_facing_weight": 0.5,
+            "camera_yaw_offset": 0.0,
+            "camera_activation_sigma": 5.0,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,
             "max_velocity": 1.75,

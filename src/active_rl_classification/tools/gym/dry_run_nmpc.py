@@ -68,12 +68,14 @@ def synthetic_surrogate(batch_size):
 def run_episode(args, seed, surrogate):
     env = TreeClassificationEnv(
         {
-            "ntargets": 5,
+            "ntargets": args.grid_rows * args.grid_cols,
             "horizon": args.steps,
             "layout": "grid",
-            "grid_n_rows": 1,
-            "grid_n_cols": 5,
-            "grid_col_spacing": 5.0,
+            "side": args.field_side,
+            "grid_n_rows": args.grid_rows,
+            "grid_n_cols": args.grid_cols,
+            "grid_row_spacing": args.grid_spacing,
+            "grid_col_spacing": args.grid_spacing,
             "grid_jitter_std": 0.0,
             "perception_csvs": [args.raw_csv, args.ripe_csv],
             "use_oracle": True,
@@ -99,6 +101,9 @@ def run_episode(args, seed, surrogate):
             "exploration_weight": 0.25,
             "exploration_sigma": 5.0,
             "attraction_weight": 0.1,
+            "camera_facing_weight": 0.5,
+            "camera_yaw_offset": 0.0,
+            "camera_activation_sigma": 5.0,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,
             "max_velocity": 1.75,
@@ -254,6 +259,10 @@ def main():
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--mpc-horizon", type=int, default=3)
+    parser.add_argument("--grid-rows", type=int, default=1)
+    parser.add_argument("--grid-cols", type=int, default=5)
+    parser.add_argument("--grid-spacing", type=float, default=5.0)
+    parser.add_argument("--field-side", type=float, default=25.0)
     parser.add_argument("--plot", help="Write the first episode trajectory plot to this path.")
     args = parser.parse_args()
     if args.synthetic_surrogate:
