@@ -3,6 +3,19 @@ import numpy as np
 
 
 class NmpcOptimizer:
+    _SMOOTH_EPS = 1e-8
+
+    @staticmethod
+    def smooth_positive(value, eps=_SMOOTH_EPS):
+        """Differentiable approximation of max(0, value)."""
+        return 0.5 * (value + ca.sqrt(value * value + eps))
+
+    @staticmethod
+    def smooth_min(left, right, eps=_SMOOTH_EPS):
+        """Differentiable approximation of min(left, right)."""
+        delta = left - right
+        return 0.5 * (left + right - ca.sqrt(delta * delta + eps))
+
     def __init__(self, params, l4c_nn):
         self.params = params
         self.l4c_nn = l4c_nn
@@ -224,7 +237,7 @@ class NmpcOptimizer:
 
             min_dist_sq = distances_sq[0]
             for j in range(1, self.num_target_trees):
-                min_dist_sq = ca.fmin(min_dist_sq, distances_sq[j])
+                min_dist_sq = self.smooth_min(min_dist_sq, distances_sq[j])
             terminal_min_dist_sq = min_dist_sq
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
@@ -257,15 +270,14 @@ class NmpcOptimizer:
                 surrogate_output_raw[start:stop, :],
             )
             prior_entropy = self.entropy_target(L0)
-            information_gain_by_target += information_discount ** i * ca.fmax(
-                0.0,
-                prior_entropy - expected_entropy,
+            information_gain_by_target += information_discount ** i * self.smooth_positive(
+                prior_entropy - expected_entropy
             )
 
         # Multiple predicted observations may concern the same tree. Cap their
         # accumulated information by the tree's current entropy, since no
         # planner can remove more uncertainty than is present initially.
-        bounded_information_gain = ca.fmin(
+        bounded_information_gain = self.smooth_min(
             self.entropy_target(L0),
             information_gain_by_target,
         )
@@ -274,9 +286,8 @@ class NmpcOptimizer:
             ca.sum1(target_mask_param),
         )
 
-        terminal_distance_excess = ca.fmax(
-            0.0,
-            ca.sqrt(terminal_min_dist_sq) - observation_range,
+        terminal_distance_excess = self.smooth_positive(
+            ca.sqrt(self.smooth_positive(terminal_min_dist_sq)) - observation_range
         )
 
         opti.minimize(

@@ -47,7 +47,12 @@ ipopt:
   bound_relax_factor: 1.0e-9
   hessian_approximation: "limited-memory"
   mu_strategy: "monotone"
-  max_iter: 1000
+  # The neural objective is non-convex. For receding-horizon control, a
+  # feasible point with modest stationarity error is preferable to blocking
+  # the ROS control loop for 1000 iterations.
+  acceptable_tol: 3.0e-2
+  acceptable_iter: 5
+  max_iter: 200
 
 map_frame: "map"
 base_frame: "drone_base_link"

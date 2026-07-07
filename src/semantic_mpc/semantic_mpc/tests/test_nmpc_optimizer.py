@@ -6,6 +6,15 @@ from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
 
 
 class NmpcOptimizerTest(unittest.TestCase):
+    def test_smooth_switches_approximate_positive_part_and_minimum(self):
+        # Test numerically without relying on exact equality at the smoothing
+        # boundary.
+        self.assertGreater(float(NmpcOptimizer.smooth_positive(ca.DM(-1.0))), -1e-6)
+        self.assertAlmostEqual(float(NmpcOptimizer.smooth_positive(ca.DM(2.0))), 2.0, places=6)
+        self.assertAlmostEqual(
+            float(NmpcOptimizer.smooth_min(ca.DM(2.0), ca.DM(3.0))), 2.0, places=6
+        )
+
     def test_bayes_numpy_is_normalized_and_respects_mask(self):
         prior = np.array([[0.5, 0.5], [0.8, 0.2]])
         likelihood = np.array([[0.9, 0.1], [0.0, 0.0]])
