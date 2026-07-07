@@ -62,6 +62,29 @@ class NmpcOptimizerTest(unittest.TestCase):
         self.assertLess(abs(uninformative - 1.0), 1e-5)
         self.assertLess(perfect, 3e-5)
 
+    def test_entropy_conditions_on_fruit_and_ignores_nothing(self):
+        entropy = NmpcOptimizer.entropy_f(3, num_classes=3)
+        result = np.asarray(
+            entropy(
+                ca.DM(
+                    [
+                        [0.25, 0.25, 0.50],
+                        [0.45, 0.05, 0.50],
+                        [0.00, 0.00, 1.00],
+                    ]
+                )
+            )
+        ).reshape(-1)
+
+        self.assertAlmostEqual(result[0], 1.0, places=7)
+        expected = -(0.9 * np.log2(0.9) + 0.1 * np.log2(0.1))
+        self.assertAlmostEqual(result[1], expected, places=7)
+        self.assertEqual(result[2], 0.0)
+
+    def test_entropy_rejects_unsupported_class_count(self):
+        with self.assertRaises(ValueError):
+            NmpcOptimizer.entropy_f(1, num_classes=4)
+
     def test_scalar_accuracy_outputs_expand_to_binary_likelihoods(self):
         ripe, raw = NmpcOptimizer.observation_likelihoods(
             ca.DM([[0.8], [0.6]]),

@@ -117,12 +117,39 @@ class NmpcOptimizer:
         return np.where(update_mask[:, None], posterior, prior)
 
     @staticmethod
-    def entropy_f(num_targets):
-        p = ca.MX.sym("input_entropy_f{}_dim".format(num_targets), num_targets, 2)
-        eps = 1e-6
-        p_clipped = ca.fmax(eps, ca.fmin(1 - eps, p))
-        entropy_per_target = -ca.sum2(p_clipped * (ca.log(p_clipped) / ca.log(2)))
-        return ca.Function("entropy_f_{}_dim".format(num_targets), [p], [entropy_per_target])
+    def entropy_f(num_targets, num_classes=2):
+        """Conditional ripe/raw entropy, excluding an optional nothing class.
+
+        Columns must be ordered ``[ripe, raw]`` or ``[ripe, raw, nothing]``.
+        The first two columns are re-normalized by their fruit probability
+        mass.  A row containing only ``nothing`` has zero fruit entropy.
+        """
+        if num_classes not in (2, 3):
+            raise ValueError("fruit entropy requires 2 or 3 probability columns")
+        p = ca.MX.sym(
+            "input_entropy_f{}_c{}".format(num_targets, num_classes),
+            num_targets,
+            num_classes,
+        )
+        eps = 1e-8
+        fruit = ca.fmax(0.0, p[:, :2])
+        fruit_mass = ca.sum2(fruit)
+        conditional = fruit / ca.repmat(ca.fmax(eps, fruit_mass), 1, 2)
+        log_terms = ca.if_else(
+            conditional > eps,
+            conditional * (ca.log(ca.fmax(eps, conditional)) / ca.log(2)),
+            0.0,
+        )
+        entropy_per_target = ca.if_else(
+            fruit_mass > eps,
+            -ca.sum2(log_terms),
+            0.0,
+        )
+        return ca.Function(
+            "entropy_f_{}_c{}".format(num_targets, num_classes),
+            [p],
+            [entropy_per_target],
+        )
 
     def expected_posterior_entropy(self, prior, likelihood_if_class0, likelihood_if_class1):
         """Expected entropy after one measurement, marginalizing both outcomes.
