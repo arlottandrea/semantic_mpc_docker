@@ -60,7 +60,7 @@ observation_standoff_weight: 0.5
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"
-  print_level: 0
+  print_level: 1
   sb: "no"
   warm_start_bound_push: 1.0e-8
   warm_start_mult_bound_push: 1.0e-8
@@ -83,8 +83,8 @@ predicted_path_topic: "predicted_path"
 tree_markers_topic: "tree_markers"
 # NMPC visualization publishers. These are independent so path and belief
 # markers can be enabled separately. The period is measured in control steps.
-publish_predicted_path: true
-publish_tree_markers: true
+publish_predicted_path: false
+publish_tree_markers: false
 visualization_publish_period: 5
 tree_service: "/obj_pose_srv"
 

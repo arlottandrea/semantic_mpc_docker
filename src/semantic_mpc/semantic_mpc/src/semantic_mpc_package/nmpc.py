@@ -29,7 +29,9 @@ from semantic_mpc_package.ros_experiment import (
 
 class NeuralMPC:
     def __init__(self, run_dir=None, initial_randomic=False, params=None, run_index=0):
-        rospy.init_node("nmpc_node", anonymous=True, log_level=rospy.INFO)
+        # A stable node name makes ROS shut down an older controller instance
+        # instead of allowing two anonymous nodes to publish competing poses.
+        rospy.init_node("nmpc_node", anonymous=False, log_level=rospy.INFO)
 
         self.params = default_nmpc_params()
         if params:
@@ -384,12 +386,24 @@ class NeuralMPC:
             durations.append(step_duration)
             metrics.log({"mpc_step_duration_s": step_duration})
 
-            cmd_pose = dynamics(x_k, u[:, 0])
+            desired_state = dynamics(x_k, u[:, 0])
+            feedback_pose = self.robot_state_update()
+            if feedback_pose is None:
+                feedback_pose = current_state
+            cmd_pose = self.optimizer.bounded_pose_command(
+                feedback_pose,
+                desired_state[:self.nx],
+                self.dt,
+                self.params["max_velocity"],
+                self.params["max_yaw_velocity"],
+            )
             if publish_visualization and self.pred_path_pub is not None:
                 self.pred_path_pub.publish(create_path_from_mpc_prediction(x_traj[:self.nx, 1:]))
             self.ros.publish_pose(cmd_pose)
 
-            commanded_velocity = cmd_pose[self.nx:]
+            command_delta = np.asarray(cmd_pose) - np.asarray(feedback_pose)
+            command_delta[2] = normalize_angle(command_delta[2])
+            commanded_velocity = command_delta / self.dt
             vx_val = float(commanded_velocity[0])
             vy_val = float(commanded_velocity[1])
             yaw_val = float(commanded_velocity[2])

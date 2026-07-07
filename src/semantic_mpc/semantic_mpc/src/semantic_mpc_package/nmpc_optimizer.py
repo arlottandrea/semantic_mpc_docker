@@ -1,3 +1,5 @@
+import math
+
 import casadi as ca
 import numpy as np
 
@@ -25,6 +27,26 @@ class NmpcOptimizer:
         )
         error = direction_to_tree - robot_pose[2] - camera_yaw_offset
         return 1.0 - ca.cos(error)
+
+    @staticmethod
+    def bounded_pose_command(current_pose, desired_pose, dt, max_velocity, max_yaw_velocity):
+        """Bound an absolute pose setpoint to one physically reachable step."""
+        current = np.asarray(current_pose, dtype=float).reshape(-1)[:3]
+        desired = np.asarray(desired_pose, dtype=float).reshape(-1)[:3]
+        command = current.copy()
+        delta_xy = desired[:2] - current[:2]
+        distance = np.linalg.norm(delta_xy)
+        max_distance = max(0.0, float(max_velocity) * float(dt))
+        if distance > max_distance and distance > 0.0:
+            delta_xy *= max_distance / distance
+        command[:2] += delta_xy
+        yaw_delta = math.atan2(
+            math.sin(desired[2] - current[2]), math.cos(desired[2] - current[2])
+        )
+        max_yaw_step = max(0.0, float(max_yaw_velocity) * float(dt))
+        command[2] += np.clip(yaw_delta, -max_yaw_step, max_yaw_step)
+        command[2] = math.atan2(math.sin(command[2]), math.cos(command[2]))
+        return command
 
     @staticmethod
     def perception_features(robot_pose, tree_position):

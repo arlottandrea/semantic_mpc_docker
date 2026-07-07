@@ -44,6 +44,22 @@ class NmpcOptimizerTest(unittest.TestCase):
             places=7,
         )
 
+    def test_absolute_pose_command_is_rate_bounded_and_wraps_yaw(self):
+        command = NmpcOptimizer.bounded_pose_command(
+            [0.0, 0.0, np.pi - 0.01],
+            [10.0, 0.0, -np.pi + 0.5],
+            dt=0.25,
+            max_velocity=2.0,
+            max_yaw_velocity=0.4,
+        )
+        self.assertAlmostEqual(command[0], 0.5, places=7)
+        self.assertAlmostEqual(command[1], 0.0, places=7)
+        yaw_step = np.arctan2(
+            np.sin(command[2] - (np.pi - 0.01)),
+            np.cos(command[2] - (np.pi - 0.01)),
+        )
+        self.assertAlmostEqual(yaw_step, 0.1, places=7)
+
     def test_bayes_numpy_is_normalized_and_respects_mask(self):
         prior = np.array([[0.5, 0.5], [0.8, 0.2]])
         likelihood = np.array([[0.9, 0.1], [0.0, 0.0]])
