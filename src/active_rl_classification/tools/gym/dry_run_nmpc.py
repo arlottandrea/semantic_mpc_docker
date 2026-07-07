@@ -104,6 +104,8 @@ def run_episode(args, seed, surrogate):
             "camera_facing_weight": 0.5,
             "camera_yaw_offset": 0.0,
             "camera_activation_sigma": 5.0,
+            "observation_standoff": 4.0,
+            "observation_standoff_weight": 0.5,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,
             "max_velocity": 1.75,
@@ -128,12 +130,21 @@ def run_episode(args, seed, surrogate):
     velocity = np.zeros(3)
     mpc_step = decision = multipliers = None
     solve_times = []
+    previous_entropy = initial
+    stagnation_steps = 0
+    target_cooldown_until = {}
     terminated = truncated = False
     while not (terminated or truncated):
         pose = np.asarray([env.drone[0], env.drone[1], math.radians(env.drone[2])])
         state = np.concatenate([pose, velocity])
+        selection_beliefs = env.beliefs.copy()
+        for target_index, cooldown_until in list(target_cooldown_until.items()):
+            if env.steps < cooldown_until:
+                selection_beliefs[target_index] = [1.0, 0.0]
+            else:
+                del target_cooldown_until[target_index]
         target_indices, target_mask = optimizer.select_nearest_untracked(
-            env.trees, env.beliefs, pose[:2], 5, 0.95
+            env.trees, selection_beliefs, pose[:2], 5, 0.95
         )
         obstacle_distances = np.linalg.norm(np.asarray(env.trees) - pose[:2], axis=1)
         obstacle_indices = np.argsort(obstacle_distances)[:5]
@@ -174,7 +185,18 @@ def run_episode(args, seed, surrogate):
         )
         velocity = measured_velocity(previous_pose, env.drone, params["dt"])
         trajectory.append(env.drone.copy())
-        entropy_history.append(total_entropy(env))
+        current_entropy = total_entropy(env)
+        entropy_history.append(current_entropy)
+        if previous_entropy - current_entropy > args.entropy_progress_epsilon:
+            stagnation_steps = 0
+        else:
+            stagnation_steps += 1
+        previous_entropy = current_entropy
+        if stagnation_steps >= args.stagnation_steps and len(target_indices):
+            target_cooldown_until[int(target_indices[0])] = (
+                env.steps + args.target_cooldown_steps
+            )
+            stagnation_steps = 0
 
     final = total_entropy(env)
     result = {
@@ -263,6 +285,9 @@ def main():
     parser.add_argument("--grid-cols", type=int, default=5)
     parser.add_argument("--grid-spacing", type=float, default=5.0)
     parser.add_argument("--field-side", type=float, default=25.0)
+    parser.add_argument("--stagnation-steps", type=int, default=50)
+    parser.add_argument("--target-cooldown-steps", type=int, default=150)
+    parser.add_argument("--entropy-progress-epsilon", type=float, default=1e-4)
     parser.add_argument("--plot", help="Write the first episode trajectory plot to this path.")
     args = parser.parse_args()
     if args.synthetic_surrogate:

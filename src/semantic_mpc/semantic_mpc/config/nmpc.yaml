@@ -46,6 +46,8 @@ attraction_weight: 0.1
 camera_facing_weight: 0.5
 camera_yaw_offset: 0.0
 camera_activation_sigma: 5.0
+observation_standoff: 4.0
+observation_standoff_weight: 0.5
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"

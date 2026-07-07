@@ -179,6 +179,8 @@ class NmpcOptimizerTest(unittest.TestCase):
             "camera_facing_weight": 0.5,
             "camera_yaw_offset": 0.0,
             "camera_activation_sigma": 5.0,
+            "observation_standoff": 4.0,
+            "observation_standoff_weight": 0.5,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,
             "max_velocity": 1.75,

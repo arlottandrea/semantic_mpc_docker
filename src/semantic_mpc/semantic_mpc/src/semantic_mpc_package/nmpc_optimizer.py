@@ -286,10 +286,15 @@ class NmpcOptimizer:
         camera_activation_sigma = max(
             float(self.params["camera_activation_sigma"]), 1e-6
         )
+        observation_standoff = max(float(self.params["observation_standoff"]), 1e-6)
+        observation_standoff_weight = float(
+            self.params["observation_standoff_weight"]
+        )
         obj = 0
         exploration_reward = 0
         terminal_min_dist_sq = None
         terminal_camera_cost = 0.0
+        terminal_standoff_cost = 0.0
 
         opti.subject_to(X[:, 0] == X0)
         ca_batch = []
@@ -354,6 +359,15 @@ class NmpcOptimizer:
                 terminal_camera_cost = ca.dot(camera_weights, camera_errors) / ca.fmax(
                     1e-8, ca.sum1(camera_weights)
                 )
+                standoff_errors = ca.MX.zeros(self.num_target_trees, 1)
+                for j in range(self.num_target_trees):
+                    distance = ca.sqrt(distances_sq[j])
+                    standoff_errors[j] = (
+                        (distance - observation_standoff) / observation_standoff
+                    ) ** 2
+                terminal_standoff_cost = ca.dot(
+                    camera_weights, standoff_errors
+                ) / ca.fmax(1e-8, ca.sum1(camera_weights))
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
             )
@@ -415,6 +429,7 @@ class NmpcOptimizer:
             - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
             + camera_facing_weight * terminal_camera_cost
+            + observation_standoff_weight * terminal_standoff_cost
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
         opti.solver("ipopt", options)
