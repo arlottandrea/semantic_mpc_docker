@@ -75,6 +75,19 @@ class NmpcOptimizerTest(unittest.TestCase):
         self.assertLess(abs(uninformative - 1.0), 1e-5)
         self.assertLess(perfect, 3e-5)
 
+    def test_expected_entropy_includes_third_measurement_outcome(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
+        prior = ca.DM([[0.5, 0.5]])
+        # Outcomes 0 and 1 identify the class, while outcome 2 is ambiguous.
+        # A binary-only loop would incorrectly return zero expected entropy.
+        class0 = ca.DM([[0.5, 0.0, 0.5]])
+        class1 = ca.DM([[0.0, 0.5, 0.5]])
+        expected = float(
+            optimizer.expected_posterior_entropy(prior, class0, class1)
+        )
+        self.assertAlmostEqual(expected, 0.5, places=6)
+
     def test_entropy_conditions_on_fruit_and_ignores_nothing(self):
         entropy = NmpcOptimizer.entropy_f(3, num_classes=3)
         result = np.asarray(
@@ -113,6 +126,20 @@ class NmpcOptimizerTest(unittest.TestCase):
         np.testing.assert_allclose(np.sum(np.asarray(ripe), axis=1), 1.0)
         np.testing.assert_allclose(np.sum(np.asarray(raw), axis=1), 1.0)
 
+    def test_realized_observations_select_conditional_likelihood_columns(self):
+        scores = np.array([[0.5, 0.5], [0.2, 0.8], [0.9, 0.1]])
+        categories = NmpcOptimizer.observed_categories(scores, decision_margin=0.05)
+        np.testing.assert_array_equal(categories, [0, 1, 2])
+        model = np.array(
+            [
+                [0.7, 0.2, 0.1, 0.6, 0.1, 0.3],
+                [0.2, 0.7, 0.1, 0.1, 0.3, 0.6],
+                [0.1, 0.2, 0.7, 0.2, 0.1, 0.7],
+            ]
+        )
+        likelihoods = NmpcOptimizer.realized_likelihoods(model, categories)
+        np.testing.assert_allclose(likelihoods, [[0.6, 0.7], [0.3, 0.7], [0.7, 0.7]])
+
     def test_horizon_entropy_propagates_sequential_bayes_updates(self):
         optimizer = object.__new__(NmpcOptimizer)
         optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
@@ -127,6 +154,18 @@ class NmpcOptimizerTest(unittest.TestCase):
 
         self.assertLess(second, first)
         self.assertGreaterEqual(second, 0.0)
+
+    def test_three_outcome_horizon_entropy_is_monotone(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
+        prior = ca.DM([[0.5, 0.5]])
+        ripe = ca.DM([[0.1, 0.1, 0.8]])
+        raw = ca.DM([[0.1, 0.8, 0.1]])
+        first, second = optimizer.expected_entropy_horizon(
+            prior, [ripe, ripe], [raw, raw]
+        )
+        self.assertLess(float(second), float(first))
+        self.assertGreaterEqual(float(second), 0.0)
 
     def test_target_selection_matches_rl_and_masks_padding(self):
         trees = np.array([[5.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])

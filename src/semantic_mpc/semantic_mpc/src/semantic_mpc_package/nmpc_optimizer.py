@@ -165,17 +165,21 @@ class NmpcOptimizer:
         """Expected entropy after one measurement, marginalizing both outcomes.
 
         Rows are targets. Prior columns are the two classes. Each likelihood
-        matrix contains P(measurement | true class) for the two outcomes.
+        matrix contains P(measurement | true class).  The number of outcomes
+        is read from the matrices (the deployed model uses nothing/raw/ripe).
         """
+        if likelihood_if_class0.size2() != likelihood_if_class1.size2():
+            raise ValueError("class likelihoods must have equal outcome counts")
         eps = 1e-9
         expected_entropy = ca.MX.zeros(prior.size1(), 1)
-        for observation in range(2):
+        for observation in range(likelihood_if_class0.size2()):
             joint0 = prior[:, 0] * likelihood_if_class0[:, observation]
             joint1 = prior[:, 1] * likelihood_if_class1[:, observation]
-            observation_probability = ca.fmax(eps, joint0 + joint1)
+            observation_probability = joint0 + joint1
+            safe_probability = ca.fmax(eps, observation_probability)
             posterior = ca.horzcat(
-                joint0 / observation_probability,
-                joint1 / observation_probability,
+                joint0 / safe_probability,
+                joint1 / safe_probability,
             )
             expected_entropy += observation_probability * self.entropy_target(posterior)
         return expected_entropy
@@ -201,10 +205,11 @@ class NmpcOptimizer:
                 for observation in range(class0.size2()):
                     joint0 = branch_prior[:, 0] * class0[:, observation]
                     joint1 = branch_prior[:, 1] * class1[:, observation]
-                    observation_probability = ca.fmax(eps, joint0 + joint1)
+                    observation_probability = joint0 + joint1
+                    safe_probability = ca.fmax(eps, observation_probability)
                     posterior = ca.horzcat(
-                        joint0 / observation_probability,
-                        joint1 / observation_probability,
+                        joint0 / safe_probability,
+                        joint1 / safe_probability,
                     )
                     next_branches.append(
                         (branch_probability * observation_probability, posterior)
@@ -228,6 +233,34 @@ class NmpcOptimizer:
         likelihood_if_raw = structured_output[:, 0:3]
         likelihood_if_ripe = structured_output[:, 3:6]
         return likelihood_if_ripe, likelihood_if_raw
+
+    @staticmethod
+    def observed_categories(class_scores, decision_margin=0.05):
+        """Map detector scores [ripe, raw] to nothing/raw/ripe indices."""
+        scores = np.asarray(class_scores, dtype=float)
+        if scores.ndim != 2 or scores.shape[1] != 2:
+            raise ValueError("class_scores must have shape N x 2 in [ripe, raw] order")
+        if not np.all(np.isfinite(scores)):
+            raise ValueError("class_scores must contain only finite values")
+        categories = np.zeros(len(scores), dtype=int)
+        decisive = np.abs(scores[:, 0] - scores[:, 1]) > float(decision_margin)
+        categories[decisive & (scores[:, 1] > scores[:, 0])] = 1
+        categories[decisive & (scores[:, 0] > scores[:, 1])] = 2
+        return categories
+
+    @staticmethod
+    def realized_likelihoods(structured_output, categories):
+        """Select P(observed category | ripe/raw) in belief-column order."""
+        output = np.asarray(structured_output, dtype=float)
+        categories = np.asarray(categories, dtype=int).reshape(-1)
+        if output.ndim != 2 or output.shape[1] != 6 or len(output) != len(categories):
+            raise ValueError("structured_output must be N x 6 and align with categories")
+        if np.any((categories < 0) | (categories > 2)):
+            raise ValueError("observation categories must be in {0, 1, 2}")
+        rows = np.arange(len(categories))
+        return np.column_stack(
+            (output[rows, 3 + categories], output[rows, categories])
+        )
 
     def mpc_opt(
         self,
@@ -396,22 +429,21 @@ class NmpcOptimizer:
             likelihoods_ripe.append(surrogate_output_ripe[start:stop, :])
             likelihoods_raw.append(surrogate_output_raw[start:stop, :])
 
+        # Exact open-loop belief-space objective.  Every possible observation
+        # sequence is marginalized and Bayes' rule is applied recursively.
+        # Discounted entropy reductions reward information obtained earlier
+        # without counting the same uncertainty more than once.
         prior_entropy = self.entropy_target(L0)
-        additive_information = ca.MX.zeros(self.num_target_trees, 1)
-        for i, (likelihood_ripe, likelihood_raw) in enumerate(
-            zip(likelihoods_ripe, likelihoods_raw)
-        ):
-            expected_entropy = self.expected_posterior_entropy(
-                L0, likelihood_ripe, likelihood_raw
-            )
-            additive_information += information_discount ** i * self.smooth_positive(
-                prior_entropy - expected_entropy
-            )
-        # Smoothly saturate repeated-view information at the uncertainty
-        # currently available. Complexity is O(horizon), not O(3**horizon).
-        discounted_information_gain = prior_entropy * (
-            1.0 - ca.exp(-additive_information / ca.fmax(1e-8, prior_entropy))
+        horizon_entropies = self.expected_entropy_horizon(
+            L0, likelihoods_ripe, likelihoods_raw
         )
+        discounted_information_gain = ca.MX.zeros(self.num_target_trees, 1)
+        previous_entropy = prior_entropy
+        for i, expected_entropy in enumerate(horizon_entropies):
+            discounted_information_gain += information_discount ** i * (
+                previous_entropy - expected_entropy
+            )
+            previous_entropy = expected_entropy
         information_gain_objective = ca.dot(
             target_mask_param, discounted_information_gain
         ) / ca.fmax(

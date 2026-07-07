@@ -49,6 +49,25 @@ GPU mode:
 ./scripts/run.sh nmpc
 ```
 
+The equivalent direct Docker invocation (without Compose) is:
+
+```bash
+docker build -t semantic-mpc-runtime -f docker/Dockerfile .
+docker run --rm --init --gpus all \
+  -p 127.0.0.1:10000:10000 \
+  -e YOLO_DEVICE=cuda -e NMPC_DEVICE=cuda \
+  -e ROS_HOME=/runs/ros -e ROS_LOG_DIR=/runs/ros/log \
+  -v "$PWD/models:/models:ro" -v "$PWD/runs:/runs" \
+  semantic-mpc-runtime nmpc
+```
+
+Unity must connect its ROS TCP Connector to the Docker host on port `10000`.
+The NMPC runtime uses a six-output conditional sensor model, exact
+`nothing/raw/ripe` finite-horizon Bayes expectation, measured-pose feedback,
+and a stationary recovery command if IPOPT fails. The first solve is slower
+because the exact belief tree has `3^mpc_horizon` observation branches; keep
+the default horizon at 5 unless the control-period budget has been measured.
+
 CPU mode is useful for baseline/RL validation, but YOLO will be substantially slower:
 
 ```bash

@@ -34,6 +34,9 @@ def default_nmpc_params():
         "num_obstacle_trees": 5,
         "sim_steps": 1200,
         "belief_update_period": 1,
+        "solver_failure_limit": 5,
+        "velocity_estimate_alpha": 0.6,
+        "observation_decision_margin": 0.05,
         "belief_tracking_threshold": 0.9975245006578829,
         "tree_entropy_threshold": 0.025,
         "observation_range": 5.0,
@@ -133,6 +136,7 @@ def load_semantic_mpc_params():
         "num_obstacle_trees",
         "sim_steps",
         "belief_update_period",
+        "solver_failure_limit",
         "belief_tracking_threshold",
         "tree_entropy_threshold",
         "observation_range",
@@ -196,6 +200,8 @@ def load_semantic_mpc_params():
         "initial_pose_publish_period",
         "measurement_period",
         "tree_velocity_radius",
+        "velocity_estimate_alpha",
+        "observation_decision_margin",
     ]
     loaded = {}
     for name in names:
@@ -215,6 +221,7 @@ def load_semantic_mpc_params():
         "num_obstacle_trees",
         "sim_steps",
         "belief_update_period",
+        "solver_failure_limit",
         "cmd_pose_queue_size",
         "tree_scores_queue_size",
         "visualization_publish_period",
@@ -271,6 +278,8 @@ def load_semantic_mpc_params():
         "initial_pose_publish_period",
         "measurement_period",
         "tree_velocity_radius",
+        "velocity_estimate_alpha",
+        "observation_decision_margin",
     }
     for name in int_names.intersection(loaded):
         loaded[name] = int(loaded[name])

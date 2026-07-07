@@ -21,6 +21,15 @@ num_target_trees: 5
 num_obstacle_trees: 5
 sim_steps: 1200
 belief_update_period: 1
+# A failed nonlinear solve commands a stationary hold and forces a cold
+# rebuild. Abort only after this many consecutive failures.
+solver_failure_limit: 5
+# Low-pass coefficient for the velocity reconstructed from Unity TF poses.
+# 1.0 is unfiltered finite differencing; lower values reject pose jitter.
+velocity_estimate_alpha: 0.6
+# If ripe/raw detector scores differ by no more than this, the realized
+# categorical observation is "nothing"; otherwise the larger class wins.
+observation_decision_margin: 0.05
 initial_pose_margin: 1.5
 initial_pose_sleep: 1.5
 wait_sleep: 0.05
