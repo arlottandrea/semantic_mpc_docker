@@ -206,6 +206,16 @@ class NmpcOptimizer:
             expected_entropy += observation_probability * self.entropy_target(posterior)
         return expected_entropy
 
+    @staticmethod
+    def discounted_entropy_cost(entropies, discount=0.9):
+        """Accumulate expected entropies with stronger weight on earlier steps."""
+        if not entropies:
+            return ca.MX.zeros(1, 1)
+        total = ca.MX.zeros(entropies[0].size1(), 1)
+        for step, entropy in enumerate(entropies):
+            total += (discount ** step) * entropy
+        return total
+
     def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
         """Expected posterior entropy after each sequential horizon measurement.
 
@@ -455,20 +465,13 @@ class NmpcOptimizer:
         # sequence is marginalized and Bayes' rule is applied recursively.
         # Discounted entropy reductions reward information obtained earlier
         # without counting the same uncertainty more than once.
-        prior_entropy = self.entropy_target(L0)
         horizon_entropies = self.expected_entropy_horizon(
             L0, likelihoods_ripe, likelihoods_raw
         )
-        discounted_information_gain = ca.MX.zeros(self.num_target_trees, 1)
-        previous_entropy = prior_entropy
-        for i, expected_entropy in enumerate(horizon_entropies):
-            discounted_information_gain += information_discount ** i * (
-                previous_entropy - expected_entropy
-            )
-            previous_entropy = expected_entropy
-        information_gain_objective = ca.dot(
-            target_mask_param, discounted_information_gain
-        ) / ca.fmax(
+        discounted_entropy_cost = self.discounted_entropy_cost(
+            horizon_entropies, discount=information_discount
+        )
+        entropy_objective = ca.dot(target_mask_param, discounted_entropy_cost) / ca.fmax(
             1.0,
             ca.sum1(target_mask_param),
         )
@@ -479,7 +482,7 @@ class NmpcOptimizer:
 
         opti.minimize(
             obj
-            - information_gain_weight * information_gain_objective
+            + information_gain_weight * entropy_objective
             - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
             + camera_facing_weight * terminal_camera_cost

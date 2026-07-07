@@ -183,6 +183,14 @@ class NmpcOptimizerTest(unittest.TestCase):
         self.assertLess(float(second), float(first))
         self.assertGreaterEqual(float(second), 0.0)
 
+    def test_discounted_entropy_cost_prefers_faster_reduction(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        first = [ca.DM([[0.5]]), ca.DM([[0.2]])]
+        second = [ca.DM([[0.2]]), ca.DM([[0.1]])]
+        first_cost = optimizer.discounted_entropy_cost(first, discount=0.9)
+        second_cost = optimizer.discounted_entropy_cost(second, discount=0.9)
+        self.assertLess(float(second_cost), float(first_cost))
+
     def test_target_selection_matches_rl_and_masks_padding(self):
         trees = np.array([[5.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
         beliefs = np.array(

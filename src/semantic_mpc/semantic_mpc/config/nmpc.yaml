@@ -42,8 +42,8 @@ max_heading_abs: 9.42477796077
 movement_weight: 0.01
 yaw_movement_weight: 0.01
 acceleration_regularization_weight: 0.0001
-information_gain_weight: 1.0
-information_discount: 0.99
+information_gain_weight: 3.0
+information_discount: 0.85
 # Gaussian covariance-map exploration. The map is evaluated analytically at
 # horizon states, avoiding grid interpolation artifacts. Covariance is
 # 4*p(ripe)*p(raw), so already-classified trees stop attracting the vehicle.
