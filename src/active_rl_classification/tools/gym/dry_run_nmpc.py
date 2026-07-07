@@ -146,6 +146,8 @@ def run_episode(args, seed, surrogate):
         target_indices, target_mask = optimizer.select_nearest_untracked(
             env.trees, selection_beliefs, pose[:2], 5, 0.95
         )
+        if args.primary_target_only:
+            target_mask[1:] = 0.0
         obstacle_distances = np.linalg.norm(np.asarray(env.trees) - pose[:2], axis=1)
         obstacle_indices = np.argsort(obstacle_distances)[:5]
         target_trees = np.asarray(env.trees)[target_indices]
@@ -288,6 +290,12 @@ def main():
     parser.add_argument("--stagnation-steps", type=int, default=50)
     parser.add_argument("--target-cooldown-steps", type=int, default=150)
     parser.add_argument("--entropy-progress-epsilon", type=float, default=1e-4)
+    parser.add_argument(
+        "--primary-target-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Commit terminal attraction/orientation costs to one tree at a time.",
+    )
     parser.add_argument("--plot", help="Write the first episode trajectory plot to this path.")
     args = parser.parse_args()
     if args.synthetic_surrogate:
