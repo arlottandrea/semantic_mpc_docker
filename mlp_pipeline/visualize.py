@@ -62,7 +62,7 @@ def prepare_inference_targets(targets, output_dim):
         return values[:, :1]
     if output_dim == 2:
         return values[:, :2]
-    return values[:, :3]
+    return values[:, :output_dim]
 
 
 def read_dataset(path, label, root, minimum, output_dim):
@@ -86,7 +86,15 @@ def read_dataset(path, label, root, minimum, output_dim):
         visibility = float(len(ripe_scores) + len(raw_scores) >= minimum)
         raw_accuracy = max(0.5, 1.0 - p_ripe)
         ripe_accuracy = max(0.5, p_ripe)
-        if output_dim <= 1:
+        if output_dim == 6:
+            raw_row = [1.0, 0.0, 0.0] if visibility < 0.5 else [
+                0.0, raw_accuracy, 1.0 - raw_accuracy
+            ]
+            ripe_row = [1.0, 0.0, 0.0] if visibility < 0.5 else [
+                0.0, 1.0 - ripe_accuracy, ripe_accuracy
+            ]
+            target = np.asarray([*raw_row, *ripe_row], dtype=np.float32)
+        elif output_dim <= 1:
             target = np.asarray([raw_accuracy if label == "raw" else ripe_accuracy], dtype=np.float32)
         elif output_dim == 2:
             target = np.asarray([raw_accuracy, ripe_accuracy], dtype=np.float32)
@@ -201,7 +209,12 @@ def main(args):
         pose_features = features
         features, target_values = maximum_over_yaw(features, target_values)
         _, prediction = maximum_over_yaw(pose_features, prediction)
-        if output_dim <= 1:
+        if output_dim == 6:
+            head_names = [
+                "raw_to_nothing", "raw_to_raw", "raw_to_ripe",
+                "ripe_to_nothing", "ripe_to_raw", "ripe_to_ripe",
+            ]
+        elif output_dim <= 1:
             head_names = [label]
         elif output_dim == 2:
             head_names = ["raw", "ripe"]

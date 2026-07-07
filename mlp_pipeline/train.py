@@ -43,6 +43,14 @@ def augment(x, y, fraction, margin, rng):
 
 def structured_loss(prediction, target, visibility_weight, semantic_weight):
     output_dim = int(prediction.shape[1])
+    if output_dim == 6:
+        likelihood = prediction.reshape(-1, 2, 3)
+        target_likelihood = target[:, :6].reshape(-1, 2, 3)
+        class_mask = target[:, 6:8]
+        cross_entropy = -(
+            target_likelihood * likelihood.clamp_min(1e-8).log()
+        ).sum(dim=-1)
+        return (cross_entropy * class_mask).sum() / class_mask.sum().clamp_min(1.0)
     if output_dim >= 3:
         visibility = torch.nn.functional.binary_cross_entropy(
             prediction[:, 0], target[:, 0]
@@ -231,6 +239,17 @@ def select_model_targets(target, cfg):
     target layout.
     """
     output_dim = int(cfg.get("output_dim", 3))
+    if output_dim == 6:
+        rows = []
+        for visible, accuracy_raw, accuracy_ripe, is_raw, is_ripe in target:
+            raw_row = [1.0, 0.0, 0.0] if visible < 0.5 else [
+                0.0, accuracy_raw, 1.0 - accuracy_raw
+            ]
+            ripe_row = [1.0, 0.0, 0.0] if visible < 0.5 else [
+                0.0, 1.0 - accuracy_ripe, accuracy_ripe
+            ]
+            rows.append([*raw_row, *ripe_row])
+        return np.asarray(rows, dtype=np.float32)
     if output_dim == 1:
         label = str(cfg.get("single_output_label", "accuracy_raw"))
         target_columns = {
@@ -266,7 +285,12 @@ def main(config_path):
         x, target, cfg, device, seed
     )
     output_labels = ["visibility", "accuracy_raw", "accuracy_ripe"]
-    if output_dim == 2:
+    if output_dim == 6:
+        output_labels = [
+            "raw_nothing", "raw_raw", "raw_ripe",
+            "ripe_nothing", "ripe_raw", "ripe_ripe",
+        ]
+    elif output_dim == 2:
         output_labels = ["accuracy_raw", "accuracy_ripe"]
     elif output_dim == 1:
         output_labels = [cfg.get("single_output_label", "accuracy_raw")]

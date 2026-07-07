@@ -38,19 +38,26 @@ class SelectModelTargetsTest(unittest.TestCase):
         # Informative MSE=0.04 and neutral MSE=0, averaged by group, not sample.
         self.assertAlmostEqual(float(mse_loss(prediction, target, 1.0, 1.0)), 0.02)
 
+    def test_conditional_targets_form_two_observation_rows(self):
+        selected = select_model_targets(self.targets, {"output_dim": 6})
+        self.assertEqual(selected.shape, (2, 6))
+        np.testing.assert_allclose(selected.reshape(-1, 2, 3).sum(axis=2), 1.0)
+        np.testing.assert_allclose(selected[1], [1.0, 0.0, 0.0] * 2)
+
     def test_structured_model_is_nothing_and_neutral_outside_range(self):
         model = MultiLayerPerceptron(
-            input_dim=3, hidden_size=8, hidden_layers=1, output_dim=3,
+            input_dim=3, hidden_size=8, hidden_layers=1, output_dim=6,
             threshold=5.0, gate_slope=10.0,
         ).eval()
         inputs = torch.tensor([[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]])
         output = model(inputs).detach().numpy()
 
-        self.assertTrue(np.all(output[:, 0] >= 0.0))
-        self.assertTrue(np.all(output[:, 1:] >= 0.5))
+        self.assertTrue(np.all(output >= 0.0))
         self.assertTrue(np.all(output <= 1.0))
-        self.assertAlmostEqual(float(output[1, 0]), 0.0, places=6)
-        np.testing.assert_allclose(output[1, 1:], 0.5, atol=1e-6)
+        np.testing.assert_allclose(output.reshape(-1, 2, 3).sum(axis=2), 1.0, atol=1e-6)
+        np.testing.assert_allclose(
+            output[1].reshape(2, 3), [[1.0, 0.0, 0.0]] * 2, atol=1e-6
+        )
 
 
 if __name__ == "__main__":

@@ -47,13 +47,22 @@ def load_surrogate(checkpoint):
         input_dim=3,
         hidden_size=64,
         hidden_layers=3,
-        output_dim=3,
+        output_dim=6,
         threshold=5.0,
         gate_slope=10.0,
     )
     model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
     model.eval()
     return l4c.L4CasADi(model, batched=True, device="cpu", name="gym_nmpc_perception")
+
+
+def synthetic_surrogate(batch_size):
+    """Constant reliable surrogate for dependency-free NMPC visualization."""
+    poses = ca.MX.sym("synthetic_perception_input", batch_size, 3)
+    output = ca.repmat(
+        ca.DM([[0.0, 0.85, 0.15, 0.0, 0.15, 0.85]]), batch_size, 1
+    )
+    return ca.Function("synthetic_gym_perception", [poses], [output])
 
 
 def run_episode(args, seed, surrogate):
@@ -107,6 +116,8 @@ def run_episode(args, seed, surrogate):
     optimizer = NmpcOptimizer(params, surrogate)
     initial = total_entropy(env)
     initial_pose = env.drone.copy()
+    trajectory = [env.drone.copy()]
+    entropy_history = [initial]
     total_distance = 0.0
     closest_tree_distance = float("inf")
     velocity = np.zeros(3)
@@ -157,6 +168,8 @@ def run_episode(args, seed, surrogate):
             float(np.min(np.linalg.norm(np.asarray(env.trees) - env.drone[:2], axis=1))),
         )
         velocity = measured_velocity(previous_pose, env.drone, params["dt"])
+        trajectory.append(env.drone.copy())
+        entropy_history.append(total_entropy(env))
 
     final = total_entropy(env)
     result = {
@@ -173,20 +186,82 @@ def run_episode(args, seed, surrogate):
         "closest_tree_distance": closest_tree_distance,
         "mean_solve_time_s": float(np.mean(solve_times)),
     }
+    if args.plot and seed == 0:
+        plot_episode(
+            args.plot,
+            np.asarray(trajectory),
+            np.asarray(entropy_history),
+            np.asarray(env.trees),
+            np.asarray(env.tree_classes),
+            env.obs_range,
+        )
     env.close()
     return result
+
+
+def plot_episode(path, trajectory, entropy_history, trees, tree_classes, observation_range):
+    import matplotlib.pyplot as plt
+
+    figure, (trajectory_axis, entropy_axis) = plt.subplots(
+        1, 2, figsize=(13, 5.5), constrained_layout=True
+    )
+    steps = np.arange(len(trajectory))
+    trajectory_axis.plot(trajectory[:, 0], trajectory[:, 1], color="0.7", linewidth=1.2)
+    points = trajectory_axis.scatter(
+        trajectory[:, 0], trajectory[:, 1], c=steps, cmap="viridis", s=18, zorder=3
+    )
+    colors = np.where(tree_classes == 1, "tab:red", "tab:green")
+    trajectory_axis.scatter(
+        trees[:, 0], trees[:, 1], c=colors, marker="o", s=110,
+        edgecolors="black", linewidths=0.8, zorder=4,
+    )
+    for index, tree in enumerate(trees):
+        circle = plt.Circle(
+            tree, observation_range, fill=False, color=colors[index], alpha=0.15
+        )
+        trajectory_axis.add_patch(circle)
+        trajectory_axis.annotate(str(index), tree, ha="center", va="center", color="white")
+    trajectory_axis.scatter(
+        trajectory[0, 0], trajectory[0, 1], marker="s", s=90, color="tab:blue", label="start"
+    )
+    trajectory_axis.scatter(
+        trajectory[-1, 0], trajectory[-1, 1], marker="X", s=100, color="black", label="end"
+    )
+    trajectory_axis.set_title("NMPC trajectory in Gym environment")
+    trajectory_axis.set_xlabel("x [m]")
+    trajectory_axis.set_ylabel("y [m]")
+    trajectory_axis.set_aspect("equal", adjustable="box")
+    trajectory_axis.grid(alpha=0.25)
+    trajectory_axis.legend()
+    figure.colorbar(points, ax=trajectory_axis, label="control step")
+
+    entropy_axis.plot(steps, entropy_history, color="tab:purple", linewidth=2)
+    entropy_axis.fill_between(steps, entropy_history, alpha=0.15, color="tab:purple")
+    entropy_axis.set_title("Ripe/raw belief entropy evolution")
+    entropy_axis.set_xlabel("control step")
+    entropy_axis.set_ylabel("total entropy [bits]")
+    entropy_axis.grid(alpha=0.25)
+    figure.savefig(path, dpi=180)
+    plt.close(figure)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-csv", required=True)
     parser.add_argument("--ripe-csv", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--synthetic-surrogate", action="store_true")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--mpc-horizon", type=int, default=3)
+    parser.add_argument("--plot", help="Write the first episode trajectory plot to this path.")
     args = parser.parse_args()
-    surrogate = load_surrogate(args.checkpoint)
+    if args.synthetic_surrogate:
+        surrogate = synthetic_surrogate(args.mpc_horizon * 5)
+    elif args.checkpoint:
+        surrogate = load_surrogate(args.checkpoint)
+    else:
+        parser.error("--checkpoint is required unless --synthetic-surrogate is used")
     records = [run_episode(args, seed, surrogate) for seed in range(args.episodes)]
     reductions = np.asarray([record["entropy_reduction"] for record in records])
     print(

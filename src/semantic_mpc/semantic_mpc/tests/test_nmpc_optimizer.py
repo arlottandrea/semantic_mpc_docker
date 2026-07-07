@@ -87,11 +87,16 @@ class NmpcOptimizerTest(unittest.TestCase):
 
     def test_structured_output_expands_to_three_outcome_likelihoods(self):
         ripe, raw = NmpcOptimizer.observation_likelihoods(
-            ca.DM([[0.8, 0.7, 0.9], [0.0, 0.8, 0.6]])
+            ca.DM(
+                [
+                    [0.2, 0.56, 0.24, 0.2, 0.08, 0.72],
+                    [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                ]
+            )
         )
 
-        np.testing.assert_allclose(np.asarray(ripe), [[0.2, 0.72, 0.08], [1.0, 0.0, 0.0]])
-        np.testing.assert_allclose(np.asarray(raw), [[0.2, 0.24, 0.56], [1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(np.asarray(ripe), [[0.2, 0.08, 0.72], [1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(np.asarray(raw), [[0.2, 0.56, 0.24], [1.0, 0.0, 0.0]])
         np.testing.assert_allclose(np.sum(np.asarray(ripe), axis=1), 1.0)
         np.testing.assert_allclose(np.sum(np.asarray(raw), axis=1), 1.0)
 
@@ -138,7 +143,7 @@ class NmpcOptimizerTest(unittest.TestCase):
         uninformative = ca.Function(
             "uninformative_test_model",
             [model_input],
-            [ca.repmat(ca.DM([[1.0, 0.5, 0.5]]), batch_size, 1)],
+            [ca.repmat(ca.DM([[0.0, 0.5, 0.5, 0.0, 0.5, 0.5]]), batch_size, 1)],
         )
         params = {
             "state_dim": 3,

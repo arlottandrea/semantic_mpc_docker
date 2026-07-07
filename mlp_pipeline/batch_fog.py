@@ -37,7 +37,7 @@ def write_config(base, path, manifest, output_csv, raw_csv, ripe_csv, model_dir,
                  scalar_label=None):
     config = json.loads(json.dumps(base))
     if variant in {"3outputs-mlp", "structured3"}:
-        config["training"]["output_dim"] = 3
+        config["training"]["output_dim"] = 6
         config["training"]["loss_function"] = "structured"
         config["training"]["single_output_label"] = "accuracy_raw"
     elif variant in {"2outputs-mlp", "two_head"}:

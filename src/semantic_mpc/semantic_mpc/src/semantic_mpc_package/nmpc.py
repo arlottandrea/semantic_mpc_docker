@@ -100,8 +100,12 @@ class NeuralMPC:
             raise ValueError("active target and obstacle counts must be positive")
         if not np.isclose(self.params["nn_threshold"], self.observation_range):
             raise ValueError("NMPC surrogate gate nn_threshold must equal observation_range")
-        if list(self.params["nn_output_labels"]) != ["visibility", "accuracy_raw", "accuracy_ripe"]:
-            raise ValueError("invalid structured perception output order")
+        expected_labels = [
+            "raw_nothing", "raw_raw", "raw_ripe",
+            "ripe_nothing", "ripe_raw", "ripe_ripe",
+        ]
+        if list(self.params["nn_output_labels"]) != expected_labels:
+            raise ValueError("invalid conditional observation output order")
         if not 0.5 < self.belief_tracking_threshold < 1.0:
             raise ValueError("belief_tracking_threshold must be between 0.5 and 1.0")
         if self.belief_update_period != 1:

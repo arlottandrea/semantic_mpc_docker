@@ -60,26 +60,26 @@ class ResidualBlock(torch.nn.Module):
 
 
 class MultiLayerPerceptron(torch.nn.Module):
-    """Compact structured surrogate producing ``[visibility, raw, ripe]``.
+    """Pose-dependent 2x3 conditional sensor likelihood.
 
     - Inputs keep the sine/cos trick for angles: call with raw yaw radians
       and the forward will cat sin(yaw), cos(yaw) to the features.
-    ``visibility`` is in [0, 1]. The two class-conditional observation
-    accuracies are in [0.5, 1], where 0.5 means neutral evidence.
+    Flattened output rows correspond to true classes ``[raw, ripe]`` and
+    columns to observations ``[nothing, raw, ripe]``. Each row sums to one.
     """
     def __init__(
         self,
         input_dim=3,
         hidden_size=128,
         hidden_layers=2,
-        output_dim=3,
+        output_dim=6,
         threshold=8.0,
         gate_slope=10.0,
         dropout=0.0,
     ):
         super().__init__()
-        if output_dim != 3:
-            raise ValueError("structured perception model requires three outputs")
+        if output_dim != 6:
+            raise ValueError("conditional observation model requires six outputs")
         in_features = input_dim + 1 if input_dim == 3 else input_dim
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
         self.blocks = torch.nn.ModuleList([ResidualBlock(hidden_size, expansion=2, dropout=dropout) for _ in range(hidden_layers)])
@@ -100,11 +100,12 @@ class MultiLayerPerceptron(torch.nn.Module):
         h = self.norm(h)
         logits = self.out_layer(h)
 
-        # Outside the observation range the model emits ``nothing`` with
-        # neutral ripe/raw evidence.
+        # Outside the observation range both true classes emit ``nothing``.
         distance = x[..., :2].norm(dim=-1)
         gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
-        probability = torch.sigmoid(logits)
-        visibility = gate.unsqueeze(-1) * probability[..., :1]
-        accuracy = 0.5 + 0.5 * gate.unsqueeze(-1) * probability[..., 1:3]
-        return torch.cat([visibility, accuracy], dim=-1)
+        learned = torch.softmax(logits.reshape(*logits.shape[:-1], 2, 3), dim=-1)
+        gate = gate[..., None, None]
+        nothing = torch.zeros_like(learned)
+        nothing[..., 0] = 1.0
+        likelihood = gate * learned + (1.0 - gate) * nothing
+        return likelihood.flatten(start_dim=-2)

@@ -208,27 +208,15 @@ class NmpcOptimizer:
 
     @staticmethod
     def observation_likelihoods(structured_output):
-        """Build three-outcome likelihoods from ``[visibility, raw, ripe]``.
+        """Read a flattened 2x3 conditional observation matrix.
 
-        Outcomes are ordered ``[nothing, ripe, raw]``. ``nothing`` carries no
-        semantic information, while visible outcomes update the binary
-        ripe/raw belief using the corresponding class-conditional accuracy.
+        Model rows are true ``[raw, ripe]`` and columns are observations
+        ``[nothing, raw, ripe]``. Belief columns are ordered ``[ripe, raw]``.
         """
-        if structured_output.size2() != 3:
-            raise ValueError("structured surrogate output must have three columns")
-        visibility = ca.fmax(0.0, ca.fmin(1.0, structured_output[:, 0]))
-        accuracy_raw = ca.fmax(0.5, ca.fmin(1.0, structured_output[:, 1]))
-        accuracy_ripe = ca.fmax(0.5, ca.fmin(1.0, structured_output[:, 2]))
-        likelihood_if_ripe = ca.horzcat(
-            1.0 - visibility,
-            visibility * accuracy_ripe,
-            visibility * (1.0 - accuracy_ripe),
-        )
-        likelihood_if_raw = ca.horzcat(
-            1.0 - visibility,
-            visibility * (1.0 - accuracy_raw),
-            visibility * accuracy_raw,
-        )
+        if structured_output.size2() != 6:
+            raise ValueError("conditional observation model must have six columns")
+        likelihood_if_raw = structured_output[:, 0:3]
+        likelihood_if_ripe = structured_output[:, 3:6]
         return likelihood_if_ripe, likelihood_if_raw
 
     def mpc_opt(
@@ -361,16 +349,22 @@ class NmpcOptimizer:
             likelihoods_ripe.append(surrogate_output_ripe[start:stop, :])
             likelihoods_raw.append(surrogate_output_raw[start:stop, :])
 
-        stage_entropies = self.expected_entropy_horizon(
-            L0, likelihoods_ripe, likelihoods_raw
-        )
-        previous_entropy = self.entropy_target(L0)
-        discounted_information_gain = ca.MX.zeros(self.num_target_trees, 1)
-        for i, expected_entropy in enumerate(stage_entropies):
-            discounted_information_gain += information_discount ** i * self.smooth_positive(
-                previous_entropy - expected_entropy
+        prior_entropy = self.entropy_target(L0)
+        additive_information = ca.MX.zeros(self.num_target_trees, 1)
+        for i, (likelihood_ripe, likelihood_raw) in enumerate(
+            zip(likelihoods_ripe, likelihoods_raw)
+        ):
+            expected_entropy = self.expected_posterior_entropy(
+                L0, likelihood_ripe, likelihood_raw
             )
-            previous_entropy = expected_entropy
+            additive_information += information_discount ** i * self.smooth_positive(
+                prior_entropy - expected_entropy
+            )
+        # Smoothly saturate repeated-view information at the uncertainty
+        # currently available. Complexity is O(horizon), not O(3**horizon).
+        discounted_information_gain = prior_entropy * (
+            1.0 - ca.exp(-additive_information / ca.fmax(1e-8, prior_entropy))
+        )
         information_gain_objective = ca.dot(
             target_mask_param, discounted_information_gain
         ) / ca.fmax(
