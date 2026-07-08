@@ -49,6 +49,13 @@ GPU mode:
 ./scripts/run.sh nmpc
 ```
 
+`./scripts/run.sh nmpc` enables the GP/RRT waypoint layer by default. For an
+NMPC-only comparison without that waypoint layer, run:
+
+```bash
+./scripts/run.sh nmpc --no-gp-rrt
+```
+
 The equivalent direct Docker invocation (without Compose) is:
 
 ```bash

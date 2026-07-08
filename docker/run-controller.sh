@@ -35,4 +35,5 @@ exec roslaunch /workspace/docker/launch/runtime.launch \
   tcp_port:=10000 \
   yolo_device:="${YOLO_DEVICE:-cuda}" \
   nmpc_device:="${NMPC_DEVICE:-cuda}" \
+  nmpc_use_gp_rrt:="${NMPC_USE_GP_RRT:-true}" \
   rl_policy_path:="${RL_POLICY_PATH:-/models/rl/final_model.zip}"

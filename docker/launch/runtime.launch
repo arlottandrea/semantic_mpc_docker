@@ -4,6 +4,7 @@
   <arg name="tcp_port" default="10000"/>
   <arg name="yolo_device" default="cuda"/>
   <arg name="nmpc_device" default="cuda"/>
+  <arg name="nmpc_use_gp_rrt" default="true"/>
   <arg name="rl_policy_path" default="/models/rl/final_model.zip"/>
 
   <include file="$(find ros_tcp_endpoint)/launch/endpoint.launch">
@@ -56,6 +57,7 @@
       <rosparam command="load" file="$(find semantic_mpc)/config/experiment.yaml"/>
       <rosparam command="load" file="$(find semantic_mpc)/config/nmpc.yaml"/>
       <param name="model_device" value="$(arg nmpc_device)"/>
+      <param name="use_gp_rrt_waypoint" value="$(arg nmpc_use_gp_rrt)"/>
     </node>
   </group>
 </launch>

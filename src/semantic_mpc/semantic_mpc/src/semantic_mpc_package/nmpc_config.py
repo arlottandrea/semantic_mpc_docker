@@ -257,6 +257,7 @@ def load_semantic_mpc_params():
         "random_initial_state",
         "mower_heading_random",
         "wandb_enabled",
+        "use_gp_rrt_waypoint",
     }
     float_names = {
         "nn_threshold",

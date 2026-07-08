@@ -49,6 +49,18 @@ information_discount: 0.85
 # 4*p(ripe)*p(raw), so already-classified trees stop attracting the vehicle.
 exploration_weight: 0.25
 exploration_sigma: 5.0
+# GP/RRT global waypoint layer. This sits above the receding-horizon NMPC
+# objective and adds an adaptive terminal waypoint cost for broad field
+# coverage when the local active-tree objective stalls.
+use_gp_rrt_waypoint: true
+gp_resolution: 1.0
+gp_kernel_scale: 3.0
+rrt_max_nodes: 120
+rrt_target_count: 1
+waypoint_attraction_weight: 0.5
+waypoint_replan_distance: 2.0
+waypoint_uncertainty_gain: 2.0
+waypoint_min_weight_scale: 0.25
 attraction_weight: 0.1
 # Smooth terminal orientation prior. Offset is camera forward axis relative to
 # robot yaw (0 for forward-facing, pi for rear-facing cameras).

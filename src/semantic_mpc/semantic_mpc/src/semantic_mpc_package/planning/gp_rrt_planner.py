@@ -133,3 +133,17 @@ class RRTWaypointPlanner:
         x_min, x_max = self.bounds[0]
         y_min, y_max = self.bounds[1]
         return bool(x_min <= point[0] <= x_max and y_min <= point[1] <= y_max)
+
+
+def copy_waypoint(waypoint):
+    if waypoint is None:
+        return None
+    return np.asarray(waypoint, dtype=float).reshape(-1).copy()
+
+
+def waypoint_changed(left, right):
+    if left is None or right is None:
+        return left is not None or right is not None
+    left = np.asarray(left, dtype=float).reshape(-1)
+    right = np.asarray(right, dtype=float).reshape(-1)
+    return left.shape != right.shape or not np.allclose(left, right, rtol=1e-5, atol=1e-7)

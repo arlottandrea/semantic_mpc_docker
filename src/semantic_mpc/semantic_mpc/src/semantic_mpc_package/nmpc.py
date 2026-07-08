@@ -14,7 +14,12 @@ from semantic_mpc_package.baselines import resolve_mower_heading
 from semantic_mpc_package.nmpc_config import default_nmpc_params, load_semantic_mpc_params
 from semantic_mpc_package.nmpc_model import load_l4casadi_model
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
-from semantic_mpc_package.planning import GaussianProcessCoverage, RRTWaypointPlanner
+from semantic_mpc_package.planning import (
+    GaussianProcessCoverage,
+    RRTWaypointPlanner,
+    copy_waypoint,
+    waypoint_changed,
+)
 from semantic_mpc_package.ros_com_lib.sensors import (
     create_path_from_mpc_prediction,
     create_tree_markers,
@@ -94,6 +99,7 @@ class NeuralMPC:
         else:
             self.waypoint_coverage = None
             self.waypoint_planner = None
+        self._optimizer_waypoint = None
 
     def _load_runtime_params(self):
         self.N = int(self.params["mpc_horizon"])
@@ -246,7 +252,7 @@ class NeuralMPC:
             distance_to_current = np.linalg.norm(
                 np.asarray(self.current_waypoint[:2], dtype=float) - np.asarray(current_state[:2], dtype=float)
             )
-            if distance_to_current <= float(self.params.get("waypoint_replan_distance", 2.0)):
+            if distance_to_current > float(self.params.get("waypoint_replan_distance", 2.0)):
                 return self.current_waypoint
         self.waypoint_coverage.observe(float(current_state[0]), float(current_state[1]), value=0.75)
         if scores is not None and update_mask is not None:
@@ -294,6 +300,8 @@ class NeuralMPC:
         self.beliefs_k = ca.DM.ones(self.num_total_trees, 2) * 0.5
         self._previous_measured_pose = None
         self._estimated_velocity = np.zeros(3, dtype=float)
+        self.current_waypoint = None
+        self._optimizer_waypoint = None
         self.ros.latest_tree_scores = None
         dynamics = self.optimizer.kin_model(self.n_state, self.n_control, self.dt)
         lb, ub = get_domain(self.trees_pos)
@@ -380,6 +388,12 @@ class NeuralMPC:
                 else:
                     self.beliefs_k = ca.DM(beliefs)
             waypoint = self.update_waypoint_planner(current_state, scores=scores, update_mask=update_mask)
+            if waypoint_changed(waypoint, self._optimizer_waypoint):
+                warm_start = True
+                mpc_step = None
+                x_dec_prev = None
+                lam_g_prev = None
+                rospy.loginfo("GP/RRT waypoint changed; rebuilding NMPC optimizer.")
 
             tracked = np.max(np.asarray(self.beliefs_k.full()), axis=1) >= self.belief_tracking_threshold
             if bool(np.all(tracked)):
@@ -414,6 +428,7 @@ class NeuralMPC:
                         steps=self.N,
                         waypoint=waypoint,
                     )
+                    self._optimizer_waypoint = copy_waypoint(waypoint)
                     warm_start = False
                 else:
                     p0_val = ca.vertcat(

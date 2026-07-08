@@ -5,6 +5,7 @@ x-cpu-runtime: &cpu-runtime
     ROS_LOG_DIR: /runs/ros/log
     YOLO_DEVICE: cpu
     NMPC_DEVICE: cpu
+    NMPC_USE_GP_RRT: ${NMPC_USE_GP_RRT:-true}
     RL_POLICY_PATH: /models/rl/final_model.zip
 services:
   baseline:
