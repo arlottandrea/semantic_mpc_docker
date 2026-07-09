@@ -58,6 +58,7 @@ docker run --rm --init --gpus all \
   -e YOLO_DEVICE=cuda -e NMPC_DEVICE=cuda \
   -e ROS_HOME=/runs/ros -e ROS_LOG_DIR=/runs/ros/log \
   -v "$PWD/models:/models:ro" -v "$PWD/runs:/runs" \
+  -v "$PWD/src/semantic_mpc/semantic_mpc/config:/workspace/src/semantic_mpc/semantic_mpc/config:ro" \
   semantic-mpc-runtime nmpc
 ```
 
@@ -67,6 +68,9 @@ The NMPC runtime uses a six-output conditional sensor model, exact
 and a stationary recovery command if IPOPT fails. The first solve is slower
 because the exact belief tree has `3^mpc_horizon` observation branches; keep
 the default horizon at 5 unless the control-period budget has been measured.
+For NMPC runtime parameters, edit `src/semantic_mpc/semantic_mpc/config/nmpc.yaml`.
+`active_target_count` controls how many targets are optimized and inferred per
+solve; the default is `1` for the faster one-target path validated in gym.
 
 CPU mode is useful for baseline/RL validation, but YOLO will be substantially slower:
 

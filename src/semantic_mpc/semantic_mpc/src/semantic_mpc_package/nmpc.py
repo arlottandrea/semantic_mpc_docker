@@ -46,6 +46,12 @@ class NeuralMPC:
         )
         self._load_runtime_params()
         self._validate_comparability()
+        rospy.loginfo(
+            "NMPC configured with %d active target(s), %d obstacle(s), horizon %d",
+            self.num_target_trees,
+            self.num_obstacle_trees,
+            self.N,
+        )
         self.run_root = self.params["run_dir"]
 
         self.l4c_nn = load_l4casadi_model(self.params)
@@ -99,9 +105,9 @@ class NeuralMPC:
 
     def _validate_comparability(self):
         if self.num_target_trees != int(self.params["active_target_count"]):
-            raise ValueError("NMPC target count must equal the RL active_target_count")
+            raise ValueError("NMPC target count must equal active_target_count")
         if self.num_obstacle_trees != int(self.params["active_obstacle_count"]):
-            raise ValueError("NMPC obstacle count must equal the shared active_obstacle_count")
+            raise ValueError("NMPC obstacle count must equal active_obstacle_count")
         if self.num_target_trees < 1 or self.num_obstacle_trees < 1:
             raise ValueError("active target and obstacle counts must be positive")
         if not np.isclose(self.params["nn_threshold"], self.observation_range):

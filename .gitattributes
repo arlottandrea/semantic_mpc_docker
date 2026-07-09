@@ -1,6 +1,8 @@
 # SCM syntax highlighting & preventing 3-way merges
 pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
+.gitattributes text eol=lf
 *.sh text eol=lf
+*.py text eol=lf
 Dockerfile text eol=lf
 *.launch text eol=lf
 # Runtime models are versioned, but kept out of normal Git objects.

@@ -47,10 +47,12 @@ def structured_loss(prediction, target, visibility_weight, semantic_weight):
         likelihood = prediction.reshape(-1, 2, 3)
         target_likelihood = target[:, :6].reshape(-1, 2, 3)
         class_mask = target[:, 6:8]
+        row_weight = target[:, 8:10] if target.shape[1] >= 10 else torch.ones_like(class_mask)
         cross_entropy = -(
             target_likelihood * likelihood.clamp_min(1e-8).log()
         ).sum(dim=-1)
-        return (cross_entropy * class_mask).sum() / class_mask.sum().clamp_min(1.0)
+        weights = class_mask * row_weight
+        return (cross_entropy * weights).sum() / weights.sum().clamp_min(1.0)
     if output_dim >= 3:
         visibility = torch.nn.functional.binary_cross_entropy(
             prediction[:, 0], target[:, 0]
@@ -157,6 +159,9 @@ def train_model(x, target, cfg, device, seed):
         input_dim=int(cfg["input_dim"]), hidden_size=int(cfg["hidden_size"]),
         hidden_layers=int(cfg["hidden_layers"]), output_dim=int(cfg["output_dim"]),
         threshold=float(cfg["threshold"]), gate_slope=float(cfg["gate_slope"]),
+        yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
+        include_alignment_features=bool(cfg.get("include_alignment_features", False)),
+        output_temperature=float(cfg.get("output_temperature", 1.0)),
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     output_dir = Path(cfg["output_dir"])
@@ -281,6 +286,12 @@ def main(config_path):
     #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
     target = np.column_stack([model_target, masks])
+    if output_dim == 6:
+        informative_weight = float(cfg.get("informative_loss_weight", 1.0))
+        likelihood = model_target.reshape(-1, 2, 3)
+        semantic_strength = np.max(likelihood[:, :, 1:], axis=2)
+        row_weights = 1.0 + (informative_weight - 1.0) * semantic_strength
+        target = np.column_stack([target, row_weights.astype(np.float32)])
     checkpoint, loss, final_train_loss, final_validation_loss = train_model(
         x, target, cfg, device, seed
     )
@@ -298,6 +309,12 @@ def main(config_path):
         "created_at": datetime.now(timezone.utc).isoformat(), "sources": sources,
         "device": str(device), "seed": seed,
         "min_detections_for_visibility": int(cfg.get("min_detections_for_visibility", 5)),
+        "hidden_size": int(cfg["hidden_size"]),
+        "hidden_layers": int(cfg["hidden_layers"]),
+        "yaw_harmonics": int(cfg.get("yaw_harmonics", 1)),
+        "include_alignment_features": bool(cfg.get("include_alignment_features", False)),
+        "output_temperature": float(cfg.get("output_temperature", 1.0)),
+        "informative_loss_weight": float(cfg.get("informative_loss_weight", 1.0)),
         "output_labels": output_labels,
         "checkpoint": checkpoint, "best_validation_loss": loss,
         "final_train_loss": final_train_loss,

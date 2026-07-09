@@ -32,8 +32,12 @@ training:
   output_dim: 6
   # Supported values: structured, mse
   loss_function: structured
-  hidden_size: 64
-  hidden_layers: 3
+  hidden_size: 128
+  hidden_layers: 4
+  yaw_harmonics: 4
+  include_alignment_features: true
+  output_temperature: 0.4
+  informative_loss_weight: 6.0
   # Must match NMPC observation_range and nn_threshold.
   threshold: 5.0
   gate_slope: 10.0

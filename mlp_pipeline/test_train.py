@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import torch
 
-from mlp_pipeline.train import mse_loss, select_model_targets
+from mlp_pipeline.train import mse_loss, select_model_targets, structured_loss
 from semantic_mpc_package.perception_model import MultiLayerPerceptron
 
 
@@ -57,6 +57,27 @@ class SelectModelTargetsTest(unittest.TestCase):
         np.testing.assert_allclose(output.reshape(-1, 2, 3).sum(axis=2), 1.0, atol=1e-6)
         np.testing.assert_allclose(
             output[1].reshape(2, 3), [[1.0, 0.0, 0.0]] * 2, atol=1e-6
+        )
+
+    def test_structured_loss_uses_optional_informative_row_weights(self):
+        prediction = torch.tensor([[0.1, 0.8, 0.1, 0.1, 0.1, 0.8]])
+        target = torch.tensor([[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 4.0, 1.0]])
+        weighted = structured_loss(prediction, target, 1.0, 1.0)
+        unweighted = structured_loss(prediction, target[:, :8], 1.0, 1.0)
+        self.assertAlmostEqual(float(weighted), float(unweighted), places=6)
+
+    def test_yaw_enriched_model_keeps_probability_contract(self):
+        model = MultiLayerPerceptron(
+            input_dim=3, hidden_size=8, hidden_layers=1, output_dim=6,
+            threshold=5.0, gate_slope=10.0, yaw_harmonics=4,
+            include_alignment_features=True,
+        ).eval()
+        output = model(torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, np.pi]]))
+        self.assertEqual(output.shape, (2, 6))
+        np.testing.assert_allclose(
+            output.detach().numpy().reshape(-1, 2, 3).sum(axis=2),
+            1.0,
+            atol=1e-6,
         )
 
 

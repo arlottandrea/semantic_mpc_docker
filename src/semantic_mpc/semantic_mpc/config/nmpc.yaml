@@ -1,10 +1,13 @@
 initial_randomic: true
 run_dir: "/runs/nmpc_runs"
 
-hidden_size: 64
-hidden_layers: 3
+hidden_size: 128
+hidden_layers: 4
 nn_input_dim: 3
 nn_output_dim: 6
+nn_yaw_harmonics: 4
+nn_include_alignment_features: true
+nn_output_temperature: 0.4
 # The surrogate confidence gate must match the RL observation range.
 nn_threshold: 5.0
 nn_gate_slope: 10.0
@@ -15,10 +18,11 @@ mpc_horizon: 5
 state_dim: 3
 control_dim: 3
 optimizer_state_dim: 6
-# Match the RL policy observation cardinality (k_obs=5). Padded target slots
-# are explicitly masked and do not duplicate objective weight.
-num_target_trees: 5
-num_obstacle_trees: 5
+# NMPC optimizes this many active targets per solve. Use 1 for the faster
+# one-target inference path that succeeded in the 5x5 gym test; increase this
+# to evaluate multi-target belief-space optimization.
+active_target_count: 1
+active_obstacle_count: 5
 sim_steps: 1200
 belief_update_period: 1
 # A failed nonlinear solve commands a stationary hold and forces a cold
@@ -57,6 +61,12 @@ camera_yaw_offset: 0.0
 camera_activation_sigma: 5.0
 observation_standoff: 4.0
 observation_standoff_weight: 0.5
+# Running yaw/standoff terms are available but disabled by default; the
+# orbit term prevents stationary in-range solutions and matched the 5x5 gym
+# baseline behavior best.
+running_camera_facing_weight: 0.0
+running_observation_standoff_weight: 0.0
+orbit_velocity_weight: 0.25
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"

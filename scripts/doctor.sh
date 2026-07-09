@@ -33,6 +33,7 @@ if [[ ! -d runs/ros/log || ! -w runs/ros/log ]]; then
 fi
 
 if [[ "${controller}" == nmpc ]]; then
+  check_file src/semantic_mpc/semantic_mpc/config/nmpc.yaml
   shopt -s nullglob globstar
   nmpc_checkpoints=(models/nmpc/**/best_model_epoch_*.pth)
   shopt -u nullglob globstar

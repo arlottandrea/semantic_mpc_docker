@@ -4,17 +4,25 @@
 import argparse
 import json
 import math
+import os
+from pathlib import Path
+import sys
 import time
 
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import casadi as ca
-import l4casadi as l4c
 import numpy as np
 from scipy.stats import entropy
-import torch
+
+ROOT = Path(__file__).resolve().parents[4]
+sys.path.insert(0, str(ROOT / "src" / "active_rl_classification" / "src"))
+sys.path.insert(0, str(ROOT / "src" / "semantic_mpc" / "semantic_mpc" / "src"))
 
 from active_rl_classification.env import TreeClassificationEnv
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
-from semantic_mpc_package.perception_model import MultiLayerPerceptron
 
 
 def total_entropy(env):
@@ -42,18 +50,46 @@ def measured_velocity(previous_pose, current_pose, dt):
     return np.asarray([xy[0], xy[1], math.radians(yaw_delta) / dt])
 
 
-def load_surrogate(checkpoint):
+def nearest_indices_with_padding(points, robot_position, count):
+    points = np.asarray(points, dtype=float)
+    distances = np.linalg.norm(points - np.asarray(robot_position, dtype=float), axis=1)
+    selected = np.argsort(distances)[:count].astype(int).tolist()
+    padding_index = selected[-1] if selected else 0
+    while len(selected) < count:
+        selected.append(padding_index)
+    return np.asarray(selected, dtype=int)
+
+
+def load_surrogate(args):
+    import l4casadi as l4c
+    import torch
+
+    from semantic_mpc_package.perception_model import MultiLayerPerceptron
+
     model = MultiLayerPerceptron(
         input_dim=3,
-        hidden_size=64,
-        hidden_layers=3,
+        hidden_size=args.hidden_size,
+        hidden_layers=args.hidden_layers,
         output_dim=6,
         threshold=5.0,
         gate_slope=10.0,
+        yaw_harmonics=args.yaw_harmonics,
+        include_alignment_features=args.include_alignment_features,
+        output_temperature=args.output_temperature,
     )
-    model.load_state_dict(torch.load(checkpoint, map_location="cpu"))
+    model.load_state_dict(torch.load(args.checkpoint, map_location="cpu"))
     model.eval()
-    return l4c.L4CasADi(model, batched=True, device="cpu", name="gym_nmpc_perception")
+    name = f"gym_nmpc_perception_h{args.mpc_horizon}_n{args.active_target_count}"
+    return l4c.L4CasADi(
+        model,
+        batched=True,
+        device="cpu",
+        name=name,
+        generate_jac=True,
+        generate_adj1=args.l4_generate_adjoints,
+        generate_jac_adj1=args.l4_generate_adjoints,
+        generate_jac_jac=False,
+    )
 
 
 def synthetic_surrogate(batch_size):
@@ -63,6 +99,33 @@ def synthetic_surrogate(batch_size):
         ca.DM([[0.0, 0.85, 0.15, 0.0, 0.15, 0.85]]), batch_size, 1
     )
     return ca.Function("synthetic_gym_perception", [poses], [output])
+
+
+def analytical_surrogate(batch_size, observation_range, gate_slope=4.0):
+    """Smooth pose-dependent conditional sensor model for NMPC diagnostics."""
+    poses = ca.MX.sym("analytical_perception_input", batch_size, 3)
+    rows = []
+    for i in range(batch_size):
+        x = poses[i, 0]
+        y = poses[i, 1]
+        yaw = poses[i, 2]
+        distance = ca.sqrt(x * x + y * y + 1e-8)
+        range_gate = 1.0 / (1.0 + ca.exp(-gate_slope * (observation_range - distance)))
+        yaw_to_tree = ca.atan2(-y, -x)
+        facing = 0.5 * (1.0 + ca.cos(yaw_to_tree - yaw))
+        accuracy = 0.5 + 0.49 * facing
+        raw_row = ca.horzcat(
+            1.0 - range_gate,
+            range_gate * accuracy,
+            range_gate * (1.0 - accuracy),
+        )
+        ripe_row = ca.horzcat(
+            1.0 - range_gate,
+            range_gate * (1.0 - accuracy),
+            range_gate * accuracy,
+        )
+        rows.append(ca.horzcat(raw_row, ripe_row))
+    return ca.Function("analytical_gym_perception", [poses], [ca.vcat(rows)])
 
 
 def run_episode(args, seed, surrogate):
@@ -82,6 +145,22 @@ def run_episode(args, seed, surrogate):
         }
     )
     env.reset(seed=seed)
+    ipopt_options = {
+        "print_level": 0,
+        "sb": "yes",
+        "acceptable_tol": 3e-2,
+        "acceptable_iter": 5,
+        "max_iter": 100,
+    }
+    hessian_mode = args.ipopt_hessian_approximation
+    if hessian_mode == "auto":
+        hessian_mode = (
+            "limited-memory"
+            if args.checkpoint and not args.l4_generate_adjoints
+            else "exact"
+        )
+    if hessian_mode == "limited-memory":
+        ipopt_options["hessian_approximation"] = "limited-memory"
     params = {
             "state_dim": 3,
             "control_dim": 3,
@@ -89,36 +168,33 @@ def run_episode(args, seed, surrogate):
             "dt": 0.25,
             "model_device": "cpu",
             "mpc_horizon": args.mpc_horizon,
-            "num_target_trees": 5,
-            "num_obstacle_trees": 5,
-            "safe_distance": 1.5,
-            "observation_range": 5.0,
-            "movement_weight": 0.01,
-            "yaw_movement_weight": 0.01,
+            "num_target_trees": args.active_target_count,
+            "num_obstacle_trees": args.active_obstacle_count,
+            "safe_distance": args.safe_distance,
+            "observation_range": args.observation_range,
+            "movement_weight": args.movement_weight,
+            "yaw_movement_weight": args.yaw_movement_weight,
             "acceleration_regularization_weight": 0.0001,
-            "information_gain_weight": 1.0,
-            "information_discount": 0.99,
-            "exploration_weight": 0.25,
-            "exploration_sigma": 5.0,
-            "attraction_weight": 0.1,
-            "camera_facing_weight": 0.5,
+            "information_gain_weight": args.information_gain_weight,
+            "information_discount": args.information_discount,
+            "exploration_weight": args.exploration_weight,
+            "exploration_sigma": args.exploration_sigma,
+            "attraction_weight": args.attraction_weight,
+            "camera_facing_weight": args.camera_facing_weight,
             "camera_yaw_offset": 0.0,
-            "camera_activation_sigma": 5.0,
-            "observation_standoff": 4.0,
-            "observation_standoff_weight": 0.5,
+            "camera_activation_sigma": args.camera_activation_sigma,
+            "observation_standoff": args.observation_standoff,
+            "observation_standoff_weight": args.observation_standoff_weight,
+            "running_camera_facing_weight": args.running_camera_facing_weight,
+            "running_observation_standoff_weight": args.running_observation_standoff_weight,
+            "orbit_velocity_weight": args.orbit_velocity_weight,
             "field_margin": 3.0,
             "max_heading_abs": 3.0 * np.pi,
-            "max_velocity": 1.75,
-            "max_yaw_velocity": np.pi / 4.0,
-            "max_accel_xy": 1.0,
-            "max_accel_yaw": np.pi / 2.0,
-            "ipopt": {
-                "print_level": 0,
-                "sb": "yes",
-                "acceptable_tol": 3e-2,
-                "acceptable_iter": 5,
-                "max_iter": 100,
-            },
+            "max_velocity": args.max_velocity,
+            "max_yaw_velocity": math.radians(args.max_yaw_velocity_deg),
+            "max_accel_xy": args.max_accel_xy,
+            "max_accel_yaw": math.radians(args.max_accel_yaw_deg),
+            "ipopt": ipopt_options,
         }
     optimizer = NmpcOptimizer(params, surrogate)
     initial = total_entropy(env)
@@ -144,21 +220,28 @@ def run_episode(args, seed, surrogate):
             else:
                 del target_cooldown_until[target_index]
         target_indices, target_mask = optimizer.select_nearest_untracked(
-            env.trees, selection_beliefs, pose[:2], 5, 0.95
+            env.trees,
+            selection_beliefs,
+            pose[:2],
+            args.active_target_count,
+            0.95,
         )
         if args.primary_target_only:
             target_mask[1:] = 0.0
-        obstacle_distances = np.linalg.norm(np.asarray(env.trees) - pose[:2], axis=1)
-        obstacle_indices = np.argsort(obstacle_distances)[:5]
+        obstacle_indices = nearest_indices_with_padding(
+            env.trees,
+            pose[:2],
+            args.active_obstacle_count,
+        )
         target_trees = np.asarray(env.trees)[target_indices]
         target_beliefs = env.beliefs[target_indices]
         obstacle_trees = np.asarray(env.trees)[obstacle_indices]
         parameter = ca.vertcat(
             ca.DM(state),
-            ca.reshape(ca.DM(target_trees), 10, 1),
-            ca.reshape(ca.DM(target_beliefs), 10, 1),
-            ca.reshape(ca.DM(target_mask), 5, 1),
-            ca.reshape(ca.DM(obstacle_trees), 10, 1),
+            ca.reshape(ca.DM(target_trees), 2 * args.active_target_count, 1),
+            ca.reshape(ca.DM(target_beliefs), 2 * args.active_target_count, 1),
+            ca.reshape(ca.DM(target_mask), args.active_target_count, 1),
+            ca.reshape(ca.DM(obstacle_trees), 2 * args.active_obstacle_count, 1),
         )
         started = time.perf_counter()
         if mpc_step is None:
@@ -207,6 +290,8 @@ def run_episode(args, seed, surrogate):
         "final_entropy": final,
         "entropy_reduction": initial - final,
         "tracked": int(np.sum(env.tracked)),
+        "tracked_indices": np.where(env.tracked)[0].astype(int).tolist(),
+        "max_beliefs": np.max(env.beliefs, axis=1).round(4).tolist(),
         "steps": env.steps,
         "success": bool(terminated),
         "initial_pose": initial_pose.tolist(),
@@ -280,6 +365,7 @@ def main():
     parser.add_argument("--ripe-csv", required=True)
     parser.add_argument("--checkpoint")
     parser.add_argument("--synthetic-surrogate", action="store_true")
+    parser.add_argument("--analytical-surrogate", action="store_true")
     parser.add_argument("--episodes", type=int, default=3)
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--mpc-horizon", type=int, default=3)
@@ -287,6 +373,43 @@ def main():
     parser.add_argument("--grid-cols", type=int, default=5)
     parser.add_argument("--grid-spacing", type=float, default=5.0)
     parser.add_argument("--field-side", type=float, default=25.0)
+    parser.add_argument("--active-target-count", type=int, default=1)
+    parser.add_argument("--active-obstacle-count", type=int, default=5)
+    parser.add_argument("--safe-distance", type=float, default=1.5)
+    parser.add_argument("--observation-range", type=float, default=5.0)
+    parser.add_argument("--observation-standoff", type=float, default=4.0)
+    parser.add_argument("--movement-weight", type=float, default=0.01)
+    parser.add_argument("--yaw-movement-weight", type=float, default=0.01)
+    parser.add_argument("--information-gain-weight", type=float, default=1.0)
+    parser.add_argument("--information-discount", type=float, default=0.99)
+    parser.add_argument("--exploration-weight", type=float, default=0.25)
+    parser.add_argument("--exploration-sigma", type=float, default=5.0)
+    parser.add_argument("--attraction-weight", type=float, default=0.1)
+    parser.add_argument("--camera-facing-weight", type=float, default=0.5)
+    parser.add_argument("--camera-activation-sigma", type=float, default=5.0)
+    parser.add_argument("--observation-standoff-weight", type=float, default=0.5)
+    parser.add_argument("--running-camera-facing-weight", type=float, default=0.0)
+    parser.add_argument("--running-observation-standoff-weight", type=float, default=0.0)
+    parser.add_argument("--orbit-velocity-weight", type=float, default=0.25)
+    parser.add_argument("--max-velocity", type=float, default=2.0)
+    parser.add_argument("--max-yaw-velocity-deg", type=float, default=60.0)
+    parser.add_argument("--max-accel-xy", type=float, default=8.0)
+    parser.add_argument("--max-accel-yaw-deg", type=float, default=240.0)
+    parser.add_argument(
+        "--ipopt-hessian-approximation",
+        choices=["auto", "exact", "limited-memory"],
+        default="auto",
+    )
+    parser.add_argument("--hidden-size", type=int, default=128)
+    parser.add_argument("--hidden-layers", type=int, default=4)
+    parser.add_argument("--yaw-harmonics", type=int, default=4)
+    parser.add_argument("--include-alignment-features", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--output-temperature", type=float, default=0.4)
+    parser.add_argument(
+        "--l4-generate-adjoints",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--stagnation-steps", type=int, default=50)
     parser.add_argument("--target-cooldown-steps", type=int, default=150)
     parser.add_argument("--entropy-progress-epsilon", type=float, default=1e-4)
@@ -298,12 +421,24 @@ def main():
     )
     parser.add_argument("--plot", help="Write the first episode trajectory plot to this path.")
     args = parser.parse_args()
+    if args.synthetic_surrogate and args.analytical_surrogate:
+        parser.error("choose only one surrogate mode")
+    if args.active_target_count < 1 or args.active_obstacle_count < 1:
+        parser.error("active target and obstacle counts must be positive")
     if args.synthetic_surrogate:
-        surrogate = synthetic_surrogate(args.mpc_horizon * 5)
+        surrogate = synthetic_surrogate(args.mpc_horizon * args.active_target_count)
+    elif args.analytical_surrogate:
+        surrogate = analytical_surrogate(
+            args.mpc_horizon * args.active_target_count,
+            args.observation_range,
+        )
     elif args.checkpoint:
-        surrogate = load_surrogate(args.checkpoint)
+        surrogate = load_surrogate(args)
     else:
-        parser.error("--checkpoint is required unless --synthetic-surrogate is used")
+        parser.error(
+            "--checkpoint is required unless --synthetic-surrogate or "
+            "--analytical-surrogate is used"
+        )
     records = [run_episode(args, seed, surrogate) for seed in range(args.episodes)]
     reductions = np.asarray([record["entropy_reduction"] for record in records])
     print(

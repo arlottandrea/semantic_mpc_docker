@@ -355,8 +355,18 @@ class NmpcOptimizer:
         observation_standoff_weight = float(
             self.params["observation_standoff_weight"]
         )
+        running_camera_facing_weight = float(
+            self.params.get("running_camera_facing_weight", 0.0)
+        )
+        running_observation_standoff_weight = float(
+            self.params.get("running_observation_standoff_weight", 0.0)
+        )
+        orbit_velocity_weight = float(self.params.get("orbit_velocity_weight", 0.0))
         obj = 0
         exploration_reward = 0
+        running_camera_cost = 0.0
+        running_standoff_cost = 0.0
+        orbit_velocity_reward = 0.0
         terminal_min_dist_sq = None
         terminal_camera_cost = 0.0
         terminal_standoff_cost = 0.0
@@ -407,32 +417,50 @@ class NmpcOptimizer:
                 target_mask_param * target_covariance,
                 gaussian_covariance,
             ) / ca.fmax(1.0, ca.sum1(target_mask_param))
-            if i == steps - 1:
-                camera_weights = ca.MX.zeros(self.num_target_trees, 1)
-                camera_errors = ca.MX.zeros(self.num_target_trees, 1)
-                for j in range(self.num_target_trees):
-                    camera_weights[j] = (
-                        target_mask_param[j]
-                        * target_covariance[j]
-                        * ca.exp(
-                            -distances_sq[j] / (2.0 * camera_activation_sigma ** 2)
-                        )
+            camera_weights = ca.MX.zeros(self.num_target_trees, 1)
+            camera_errors = ca.MX.zeros(self.num_target_trees, 1)
+            standoff_errors = ca.MX.zeros(self.num_target_trees, 1)
+            orbit_rewards = ca.MX.zeros(self.num_target_trees, 1)
+            for j in range(self.num_target_trees):
+                diff_to_robot = X[:2, i + 1] - target_param[:, j]
+                distance_sq = ca.sumsqr(diff_to_robot) + 1e-6
+                camera_weights[j] = (
+                    target_mask_param[j]
+                    * target_covariance[j]
+                    * ca.exp(
+                        -distances_sq[j] / (2.0 * camera_activation_sigma ** 2)
                     )
-                    camera_errors[j] = self.camera_facing_error(
-                        X[:3, i + 1], target_param[:, j], camera_yaw_offset
-                    )
-                terminal_camera_cost = ca.dot(camera_weights, camera_errors) / ca.fmax(
-                    1e-8, ca.sum1(camera_weights)
                 )
-                standoff_errors = ca.MX.zeros(self.num_target_trees, 1)
-                for j in range(self.num_target_trees):
-                    distance = ca.sqrt(distances_sq[j])
-                    standoff_errors[j] = (
-                        (distance - observation_standoff) / observation_standoff
-                    ) ** 2
-                terminal_standoff_cost = ca.dot(
-                    camera_weights, standoff_errors
-                ) / ca.fmax(1e-8, ca.sum1(camera_weights))
+                camera_errors[j] = self.camera_facing_error(
+                    X[:3, i + 1], target_param[:, j], camera_yaw_offset
+                )
+                distance = ca.sqrt(distances_sq[j])
+                standoff_errors[j] = (
+                    (distance - observation_standoff) / observation_standoff
+                ) ** 2
+                tangential_velocity = (
+                    -diff_to_robot[1] * X[3, i + 1]
+                    + diff_to_robot[0] * X[4, i + 1]
+                ) / ca.sqrt(distance_sq)
+                orbit_rewards[j] = (
+                    tangential_velocity
+                    / max(float(self.params["max_velocity"]), 1e-6)
+                ) ** 2
+            step_camera_cost = ca.dot(camera_weights, camera_errors) / ca.fmax(
+                1e-8, ca.sum1(camera_weights)
+            )
+            step_standoff_cost = ca.dot(
+                camera_weights, standoff_errors
+            ) / ca.fmax(1e-8, ca.sum1(camera_weights))
+            step_orbit_reward = ca.dot(
+                camera_weights, orbit_rewards
+            ) / ca.fmax(1e-8, ca.sum1(camera_weights))
+            running_camera_cost += information_discount ** i * step_camera_cost
+            running_standoff_cost += information_discount ** i * step_standoff_cost
+            orbit_velocity_reward += information_discount ** i * step_orbit_reward
+            if i == steps - 1:
+                terminal_camera_cost = step_camera_cost
+                terminal_standoff_cost = step_standoff_cost
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
             )
@@ -487,6 +515,9 @@ class NmpcOptimizer:
             + attraction_weight * terminal_distance_excess
             + camera_facing_weight * terminal_camera_cost
             + observation_standoff_weight * terminal_standoff_cost
+            + running_camera_facing_weight * running_camera_cost
+            + running_observation_standoff_weight * running_standoff_cost
+            - orbit_velocity_weight * orbit_velocity_reward
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
         opti.solver("ipopt", options)

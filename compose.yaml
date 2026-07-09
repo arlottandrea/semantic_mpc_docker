@@ -26,6 +26,7 @@ x-runtime: &runtime
   volumes:
     - ./models:/models:ro
     - ./runs:/runs
+    - ./src/semantic_mpc/semantic_mpc/config:/workspace/src/semantic_mpc/semantic_mpc/config:ro
   healthcheck:
     test: ["CMD-SHELL", "rosnode list 2>/dev/null | grep -q /unity_endpoint"]
     interval: 10s

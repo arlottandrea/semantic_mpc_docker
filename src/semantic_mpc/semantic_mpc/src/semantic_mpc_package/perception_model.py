@@ -76,11 +76,23 @@ class MultiLayerPerceptron(torch.nn.Module):
         threshold=8.0,
         gate_slope=10.0,
         dropout=0.0,
+        yaw_harmonics=1,
+        include_alignment_features=False,
+        output_temperature=1.0,
     ):
         super().__init__()
         if output_dim != 6:
             raise ValueError("conditional observation model requires six outputs")
-        in_features = input_dim + 1 if input_dim == 3 else input_dim
+        self.input_dim = int(input_dim)
+        self.yaw_harmonics = max(1, int(yaw_harmonics))
+        self.include_alignment_features = bool(include_alignment_features)
+        self.output_temperature = max(float(output_temperature), 1e-3)
+        if self.input_dim == 3:
+            in_features = 2 + 2 * self.yaw_harmonics
+            if self.include_alignment_features:
+                in_features += 5
+        else:
+            in_features = self.input_dim
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
         self.blocks = torch.nn.ModuleList([ResidualBlock(hidden_size, expansion=2, dropout=dropout) for _ in range(hidden_layers)])
         self.norm = torch.nn.LayerNorm(hidden_size)
@@ -88,11 +100,31 @@ class MultiLayerPerceptron(torch.nn.Module):
         self.register_buffer("threshold", torch.tensor(float(threshold)))
         self.register_buffer("gate_slope", torch.tensor(float(gate_slope)))
 
+    def encode_pose(self, x):
+        if x.shape[-1] != 3:
+            return x
+        xy = x[..., :2]
+        yaw = x[..., -1:]
+        harmonic_features = []
+        for harmonic in range(1, self.yaw_harmonics + 1):
+            angle = harmonic * yaw
+            harmonic_features.extend([torch.sin(angle), torch.cos(angle)])
+        encoded = [xy, *harmonic_features]
+        if self.include_alignment_features:
+            distance = xy.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            direction_to_tree = -xy / distance
+            heading = torch.cat([torch.cos(yaw), torch.sin(yaw)], dim=-1)
+            facing = (heading * direction_to_tree).sum(dim=-1, keepdim=True)
+            lateral = (
+                heading[..., :1] * direction_to_tree[..., 1:2]
+                - heading[..., 1:2] * direction_to_tree[..., :1]
+            )
+            encoded.extend([distance, direction_to_tree, facing, lateral])
+        return torch.cat(encoded, dim=-1)
+
     def forward(self, x):
-        # angle handling: expect last column to be yaw in radians when present
-        if x.shape[-1] == 3:
-            angle = x[..., -1:]
-            x = torch.cat([x[..., :-1], torch.sin(angle), torch.cos(angle)], dim=-1)
+        pose_xy = x[..., :2]
+        x = self.encode_pose(x)
 
         h = self.input_layer(x)
         for blk in self.blocks:
@@ -101,9 +133,12 @@ class MultiLayerPerceptron(torch.nn.Module):
         logits = self.out_layer(h)
 
         # Outside the observation range both true classes emit ``nothing``.
-        distance = x[..., :2].norm(dim=-1)
+        distance = pose_xy.norm(dim=-1)
         gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
-        learned = torch.softmax(logits.reshape(*logits.shape[:-1], 2, 3), dim=-1)
+        learned = torch.softmax(
+            logits.reshape(*logits.shape[:-1], 2, 3) / self.output_temperature,
+            dim=-1,
+        )
         gate = gate[..., None, None]
         nothing = torch.zeros_like(learned)
         nothing[..., 0] = 1.0
