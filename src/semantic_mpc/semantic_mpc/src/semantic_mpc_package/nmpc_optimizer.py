@@ -553,6 +553,18 @@ class NmpcOptimizer:
                 u_seed[:2, :] = (
                     0.5 * float(self.params["max_accel_xy"]) * direction / direction_norm
                 )[:, None]
+                desired_yaw = math.atan2(direction[1], direction[0]) - float(
+                    self.params.get("camera_yaw_offset", 0.0)
+                )
+                yaw_error = math.atan2(
+                    math.sin(desired_yaw - x0_np[2]),
+                    math.cos(desired_yaw - x0_np[2]),
+                )
+                u_seed[2, :] = (
+                    0.5
+                    * float(self.params["max_accel_yaw"])
+                    * np.sign(yaw_error)
+                )
         for i in range(steps):
             acceleration = u_seed[:, i]
             x_seed[:3, i + 1] = (
@@ -564,7 +576,7 @@ class NmpcOptimizer:
         opti.set_initial(U, u_seed)
         opti.set_initial(X, x_seed)
 
-        sol = opti.solve()
+        sol = opti.solve_limited()
         mpc_step_func = opti.to_function(
             "mpc_step",
             inputs,

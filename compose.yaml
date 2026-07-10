@@ -24,6 +24,9 @@ x-runtime: &runtime
     NMPC_DEVICE: ${NMPC_DEVICE:-cuda}
     NMPC_MODEL_DIR: /models/nmpc
     RL_POLICY_PATH: /models/rl/final_model.zip
+    OMP_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
   volumes:
     - ./models:/models:ro
     - ./runs:/runs

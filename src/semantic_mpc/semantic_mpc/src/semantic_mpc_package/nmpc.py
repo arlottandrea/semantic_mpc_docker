@@ -262,7 +262,6 @@ class NeuralMPC:
         self._previous_measured_pose = None
         self._estimated_velocity = np.zeros(3, dtype=float)
         self.ros.latest_tree_scores = None
-        dynamics = self.optimizer.kin_model(self.n_state, self.n_control, self.dt)
         lb, ub = get_domain(self.trees_pos)
         current_state = None
 
@@ -413,16 +412,24 @@ class NeuralMPC:
             durations.append(step_duration)
             metrics.log({"mpc_step_duration_s": step_duration})
 
-            desired_state = dynamics(x_k, u[:, 0])
             feedback_pose = self.robot_state_update()
             if feedback_pose is None:
                 feedback_pose = current_state
+            desired_state = self._command_reference_from_trajectory(x_traj, step_duration)
             cmd_pose = self.optimizer.bounded_pose_command(
                 feedback_pose,
                 desired_state[:self.nx],
                 self.dt,
                 self.params["max_velocity"],
                 self.params["max_yaw_velocity"],
+            )
+            self._log_command_diagnostics(
+                target_indices,
+                target_trees,
+                feedback_pose,
+                desired_state,
+                cmd_pose,
+                step_duration,
             )
             if publish_visualization and self.pred_path_pub is not None:
                 self.pred_path_pub.publish(create_path_from_mpc_prediction(x_traj[:self.nx, 1:]))
@@ -489,6 +496,55 @@ class NeuralMPC:
             rospy.sleep(self.wait_sleep)
             current_state = self.robot_state_update()
         return current_state
+
+    def _command_reference_from_trajectory(self, x_traj, elapsed_s):
+        """Select a non-stale trajectory waypoint after a slow optimization."""
+        elapsed_s = max(0.0, float(elapsed_s))
+        step_index = int(math.ceil(elapsed_s / max(self.dt, 1e-6)))
+        step_index = min(max(1, step_index), x_traj.size2() - 1)
+        return x_traj[:self.nx, step_index]
+
+    def _log_command_diagnostics(
+        self,
+        target_indices,
+        target_trees,
+        feedback_pose,
+        desired_state,
+        cmd_pose,
+        solve_time,
+    ):
+        if len(target_indices) == 0 or len(target_trees) == 0:
+            return
+        feedback = np.asarray(feedback_pose, dtype=float).reshape(-1)[:3]
+        desired = np.asarray(desired_state, dtype=float).reshape(-1)[:3]
+        command = np.asarray(cmd_pose, dtype=float).reshape(-1)[:3]
+        target = np.asarray(target_trees[0], dtype=float).reshape(-1)[:2]
+        desired_yaw = math.atan2(target[1] - feedback[1], target[0] - feedback[0]) - float(
+            self.params["camera_yaw_offset"]
+        )
+        yaw_error = normalize_angle(desired_yaw - feedback[2])
+        rospy.loginfo_throttle(
+            2.0,
+            (
+                "NMPC command target=%d target_xy=(%.2f, %.2f) solve=%.3fs "
+                "pose=(%.2f, %.2f, %.2f) desired=(%.2f, %.2f, %.2f) "
+                "cmd=(%.2f, %.2f, %.2f) yaw_error=%.2f"
+            ),
+            int(target_indices[0]),
+            target[0],
+            target[1],
+            float(solve_time),
+            feedback[0],
+            feedback[1],
+            feedback[2],
+            desired[0],
+            desired[1],
+            desired[2],
+            command[0],
+            command[1],
+            command[2],
+            yaw_error,
+        )
 
     def _sleep_for_rate(self, rate, loop_start, mpciter):
         loop_elapsed = time.time() - loop_start

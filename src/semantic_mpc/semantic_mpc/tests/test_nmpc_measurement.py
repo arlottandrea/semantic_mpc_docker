@@ -48,6 +48,40 @@ class NeuralMPCMeasurementTest(unittest.TestCase):
         self.assertEqual(mpc.l4c_nn.calls, 2)
         self.assertEqual(result.shape, (7, 6))
 
+    def test_command_reference_advances_when_solve_exceeds_dt(self):
+        mpc = object.__new__(NeuralMPC)
+        mpc.dt = 0.25
+        mpc.nx = 3
+        x_traj = ca.DM(
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.1, 0.2, 0.3],
+            ]
+        )
+
+        fast = np.asarray(mpc._command_reference_from_trajectory(x_traj, 0.10)).reshape(-1)
+        slow = np.asarray(mpc._command_reference_from_trajectory(x_traj, 0.34)).reshape(-1)
+
+        np.testing.assert_allclose(fast, [1.0, 0.0, 0.1])
+        np.testing.assert_allclose(slow, [2.0, 0.0, 0.2])
+
+    def test_command_reference_clamps_to_horizon(self):
+        mpc = object.__new__(NeuralMPC)
+        mpc.dt = 0.25
+        mpc.nx = 3
+        x_traj = ca.DM(
+            [
+                [0.0, 1.0, 2.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 0.1, 0.2],
+            ]
+        )
+
+        result = np.asarray(mpc._command_reference_from_trajectory(x_traj, 5.0)).reshape(-1)
+
+        np.testing.assert_allclose(result, [2.0, 0.0, 0.2])
+
 
 if __name__ == "__main__":
     unittest.main()
