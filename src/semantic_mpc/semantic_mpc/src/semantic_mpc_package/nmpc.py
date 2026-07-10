@@ -55,6 +55,7 @@ class NeuralMPC:
         self.run_root = self.params["run_dir"]
 
         self.l4c_nn = load_l4casadi_model(self.params)
+        self.nn_batch_size = self.N * self.num_target_trees
         self.optimizer = NmpcOptimizer(self.params, self.l4c_nn)
 
         self.ros = RosExperimentContext(self.params)
@@ -164,11 +165,31 @@ class NeuralMPC:
         features = np.column_stack(
             (relative, np.full(self.num_total_trees, normalize_angle(pose[2])))
         )
-        structured = np.asarray(self.l4c_nn(ca.DM(features)), dtype=float)
+        structured = self._evaluate_l4c_nn_fixed_batches(features)
         categories = self.optimizer.observed_categories(
             detector_scores, self.observation_decision_margin
         )
         return self.optimizer.realized_likelihoods(structured, categories)
+
+    def _evaluate_l4c_nn_fixed_batches(self, features):
+        """Evaluate L4CasADi using the fixed batch shape created for planning."""
+        features = np.asarray(features, dtype=float)
+        if features.ndim != 2 or features.shape[1] != int(self.params["nn_input_dim"]):
+            raise ValueError("features must have shape N x nn_input_dim")
+        if len(features) == 0:
+            return np.zeros((0, int(self.params["nn_output_dim"])), dtype=float)
+
+        batch_size = max(1, int(getattr(self, "nn_batch_size", self.N * self.num_target_trees)))
+        outputs = []
+        for start in range(0, len(features), batch_size):
+            chunk = features[start:start + batch_size]
+            chunk_len = len(chunk)
+            if chunk_len < batch_size:
+                padding = np.repeat(chunk[-1:, :], batch_size - chunk_len, axis=0)
+                chunk = np.vstack((chunk, padding))
+            evaluated = np.asarray(self.l4c_nn(ca.DM(chunk)), dtype=float)
+            outputs.append(evaluated[:chunk_len])
+        return np.vstack(outputs)
 
     def generate_seeded_initial_state(self):
         start_pose = self.params.get("start_pose")
