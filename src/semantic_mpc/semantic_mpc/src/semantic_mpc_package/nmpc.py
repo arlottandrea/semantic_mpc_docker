@@ -262,7 +262,6 @@ class NeuralMPC:
         self._previous_measured_pose = None
         self._estimated_velocity = np.zeros(3, dtype=float)
         self.ros.latest_tree_scores = None
-        dynamics = self.optimizer.kin_model(self.n_state, self.n_control, self.dt)
         lb, ub = get_domain(self.trees_pos)
         current_state = None
 
@@ -413,10 +412,10 @@ class NeuralMPC:
             durations.append(step_duration)
             metrics.log({"mpc_step_duration_s": step_duration})
 
-            desired_state = dynamics(x_k, u[:, 0])
             feedback_pose = self.robot_state_update()
             if feedback_pose is None:
                 feedback_pose = current_state
+            desired_state = self._command_reference_from_trajectory(x_traj, step_duration)
             cmd_pose = self.optimizer.bounded_pose_command(
                 feedback_pose,
                 desired_state[:self.nx],
@@ -489,6 +488,13 @@ class NeuralMPC:
             rospy.sleep(self.wait_sleep)
             current_state = self.robot_state_update()
         return current_state
+
+    def _command_reference_from_trajectory(self, x_traj, elapsed_s):
+        """Select a non-stale trajectory waypoint after a slow optimization."""
+        elapsed_s = max(0.0, float(elapsed_s))
+        step_index = int(math.ceil(elapsed_s / max(self.dt, 1e-6)))
+        step_index = min(max(1, step_index), x_traj.size2() - 1)
+        return x_traj[:self.nx, step_index]
 
     def _sleep_for_rate(self, rate, loop_start, mpciter):
         loop_elapsed = time.time() - loop_start
