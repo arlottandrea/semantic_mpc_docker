@@ -9,18 +9,28 @@ class NmpcOptimizerTest(unittest.TestCase):
     def test_perception_features_match_training_csv_structure(self):
         robot_pose = ca.MX.sym("feature_robot_pose", 3, 1)
         tree_position = ca.MX.sym("feature_tree_position", 2, 1)
-        features = NmpcOptimizer.perception_features(robot_pose, tree_position)
+        camera_yaw_offset = ca.MX.sym("feature_camera_yaw_offset")
+        features = NmpcOptimizer.perception_features(
+            robot_pose,
+            tree_position,
+            camera_yaw_offset,
+        )
         function = ca.Function(
             "perception_features_test",
-            [robot_pose, tree_position],
+            [robot_pose, tree_position, camera_yaw_offset],
             [features],
         )
 
         result = np.asarray(
-            function(ca.DM([4.0, -1.0, 3.0 * np.pi]), ca.DM([1.5, 2.0]))
+            function(ca.DM([4.0, -1.0, 3.0 * np.pi]), ca.DM([1.5, 2.0]), 0.0)
         ).reshape(-1)
         np.testing.assert_allclose(result[:2], [2.5, -3.0])
-        self.assertAlmostEqual(result[2], np.pi, places=6)
+        self.assertAlmostEqual(result[2], -0.8760580505981925, places=6)
+
+        result_with_offset = np.asarray(
+            function(ca.DM([4.0, -1.0, 3.0 * np.pi]), ca.DM([1.5, 2.0]), 0.25)
+        ).reshape(-1)
+        self.assertAlmostEqual(result_with_offset[2], -1.1260580505981925, places=6)
 
     def test_smooth_switches_approximate_positive_part_and_minimum(self):
         # Test numerically without relying on exact equality at the smoothing
@@ -95,14 +105,30 @@ class NmpcOptimizerTest(unittest.TestCase):
         optimizer = object.__new__(NmpcOptimizer)
         optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
         prior = ca.DM([[0.5, 0.5]])
-        # Outcomes 0 and 1 identify the class, while outcome 2 is ambiguous.
-        # A binary-only loop would incorrectly return zero expected entropy.
+        # Outcome 0 is "nothing" and must preserve the prior; outcome 1
+        # identifies one class; outcome 2 is ambiguous.
         class0 = ca.DM([[0.5, 0.0, 0.5]])
         class1 = ca.DM([[0.0, 0.5, 0.5]])
         expected = float(
             optimizer.expected_posterior_entropy(prior, class0, class1)
         )
-        self.assertAlmostEqual(expected, 0.5, places=6)
+        self.assertAlmostEqual(expected, 0.75, places=6)
+
+    def test_nothing_observation_is_not_class_evidence(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
+        prior = ca.DM([[0.5, 0.5]])
+        ripe_likelihood = ca.DM([[1.0, 0.0, 0.0]])
+        raw_likelihood = ca.DM([[1.0, 0.0, 0.0]])
+
+        expected = float(
+            optimizer.expected_posterior_entropy(
+                prior,
+                ripe_likelihood,
+                raw_likelihood,
+            )
+        )
+        self.assertAlmostEqual(expected, 1.0, places=6)
 
     def test_entropy_conditions_on_fruit_and_ignores_nothing(self):
         entropy = NmpcOptimizer.entropy_f(3, num_classes=3)
@@ -154,7 +180,7 @@ class NmpcOptimizerTest(unittest.TestCase):
             ]
         )
         likelihoods = NmpcOptimizer.realized_likelihoods(model, categories)
-        np.testing.assert_allclose(likelihoods, [[0.6, 0.7], [0.3, 0.7], [0.7, 0.7]])
+        np.testing.assert_allclose(likelihoods, [[1.0, 1.0], [0.3, 0.7], [0.7, 0.7]])
 
     def test_horizon_entropy_propagates_sequential_bayes_updates(self):
         optimizer = object.__new__(NmpcOptimizer)
@@ -190,6 +216,15 @@ class NmpcOptimizerTest(unittest.TestCase):
         first_cost = optimizer.discounted_entropy_cost(first, discount=0.9)
         second_cost = optimizer.discounted_entropy_cost(second, discount=0.9)
         self.assertLess(float(second_cost), float(first_cost))
+
+    def test_entropy_time_pressure_penalizes_late_reduction(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        fast = [ca.DM([[0.2]]), ca.DM([[0.2]]), ca.DM([[0.2]])]
+        slow = [ca.DM([[1.0]]), ca.DM([[0.2]]), ca.DM([[0.2]])]
+        fast_cost = optimizer.entropy_time_pressure_cost(fast, dt=0.25)
+        slow_cost = optimizer.entropy_time_pressure_cost(slow, dt=0.25)
+
+        self.assertLess(float(fast_cost), float(slow_cost))
 
     def test_target_selection_matches_rl_and_masks_padding(self):
         trees = np.array([[5.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
@@ -270,6 +305,64 @@ class NmpcOptimizerTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(command)))
         self.assertGreater(command[0], 0.5)
         self.assertLessEqual(abs(command[0]), params["max_accel_xy"] + 1e-6)
+
+    def test_active_target_respects_safe_distance_constraint(self):
+        horizon = 8
+        model_input = ca.MX.sym("target_safety_model_input", horizon, 3)
+        uninformative = ca.Function(
+            "target_safety_test_model",
+            [model_input],
+            [ca.repmat(ca.DM([[0.0, 0.5, 0.5, 0.0, 0.5, 0.5]]), horizon, 1)],
+        )
+        params = {
+            "state_dim": 3,
+            "control_dim": 3,
+            "optimizer_state_dim": 6,
+            "num_target_trees": 1,
+            "num_obstacle_trees": 1,
+            "dt": 0.25,
+            "mpc_horizon": horizon,
+            "safe_distance": 1.0,
+            "observation_range": 0.05,
+            "movement_weight": 1e-4,
+            "yaw_movement_weight": 1e-4,
+            "acceleration_regularization_weight": 1e-6,
+            "information_gain_weight": 0.0,
+            "information_discount": 0.99,
+            "exploration_weight": 0.0,
+            "exploration_sigma": 5.0,
+            "attraction_weight": 10.0,
+            "camera_facing_weight": 0.0,
+            "camera_yaw_offset": 0.0,
+            "camera_activation_sigma": 5.0,
+            "observation_standoff": 4.0,
+            "observation_standoff_weight": 0.0,
+            "running_camera_facing_weight": 0.0,
+            "running_observation_standoff_weight": 0.0,
+            "orbit_velocity_weight": 0.0,
+            "field_margin": 3.0,
+            "max_heading_abs": 3.0 * np.pi,
+            "max_velocity": 3.0,
+            "max_yaw_velocity": np.pi,
+            "max_accel_xy": 4.0,
+            "max_accel_yaw": np.pi,
+            "ipopt": {"print_level": 0, "sb": "yes", "max_iter": 100},
+        }
+        optimizer = NmpcOptimizer(params, uninformative)
+        target = np.array([[2.0, 0.0]])
+        _, _, trajectory, _, _ = optimizer.mpc_opt(
+            target,
+            np.array([[0.5, 0.5]]),
+            np.ones(1),
+            np.array([[50.0, 50.0]]),
+            np.array([-5.0, -5.0]),
+            np.array([5.0, 5.0]),
+            np.zeros(6),
+            steps=horizon,
+        )
+
+        distances = np.linalg.norm(np.asarray(trajectory)[:2, 1:].T - target[0], axis=1)
+        self.assertGreaterEqual(np.min(distances), params["safe_distance"] - 1e-5)
 
 
 if __name__ == "__main__":

@@ -162,8 +162,14 @@ class NeuralMPC:
         """Evaluate the learned generative sensor model for realized observations."""
         pose = np.asarray(robot_pose, dtype=float).reshape(-1)[:3]
         relative = pose[None, :2] - self.trees_pos[:, :2]
+        direction_to_tree = np.arctan2(
+            self.trees_pos[:, 1] - pose[1],
+            self.trees_pos[:, 0] - pose[0],
+        )
+        relative_yaw = direction_to_tree - pose[2] - float(self.params["camera_yaw_offset"])
+        relative_yaw = np.arctan2(np.sin(relative_yaw), np.cos(relative_yaw))
         features = np.column_stack(
-            (relative, np.full(self.num_total_trees, normalize_angle(pose[2])))
+            (relative, relative_yaw)
         )
         structured = self._evaluate_l4c_nn_fixed_batches(features)
         categories = self.optimizer.observed_categories(

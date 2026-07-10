@@ -2,13 +2,7 @@ import json
 import os
 import re
 
-import l4casadi as l4c
 import rospy
-import torch
-
-from semantic_mpc_package.perception_model import MultiLayerPerceptron
-
-torch.jit.set_fusion_strategy([("STATIC", 0)])
 
 
 def _checkpoint_epoch(path):
@@ -58,10 +52,23 @@ def _is_compatible_checkpoint(path, params):
 
 
 def get_latest_best_model(params):
-    model_dir = os.environ.get(
-        "NMPC_MODEL_DIR",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"),
-    )
+    explicit_model = params.get("nn_model_path")
+    if explicit_model not in (None, "", []):
+        model_path = os.path.expandvars(os.path.expanduser(str(explicit_model)))
+        if not os.path.isfile(model_path):
+            raise FileNotFoundError("Configured nn_model_path does not exist: {}".format(model_path))
+        if not _is_compatible_checkpoint(model_path, params):
+            raise ValueError("Configured nn_model_path is not compatible: {}".format(model_path))
+        rospy.loginfo("Loading configured NMPC model: %s", model_path)
+        return model_path
+
+    configured_dir = params.get("nn_model_dir")
+    model_dir = os.path.expandvars(os.path.expanduser(str(configured_dir))) if configured_dir else None
+    if not model_dir:
+        model_dir = os.environ.get(
+            "NMPC_MODEL_DIR",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"),
+        )
     model_files = []
     for root, _, filenames in os.walk(model_dir):
         for filename in filenames:
@@ -73,11 +80,17 @@ def get_latest_best_model(params):
         raise FileNotFoundError("No compatible model files found in {}".format(model_dir))
     latest_model = max(model_files, key=_checkpoint_epoch)
     model_path = latest_model
-    rospy.loginfo("Loading model: %s", model_path)
+    rospy.loginfo("Loading latest compatible NMPC model from %s: %s", model_dir, model_path)
     return model_path
 
 
 def load_l4casadi_model(params):
+    import l4casadi as l4c
+    import torch
+
+    from semantic_mpc_package.perception_model import MultiLayerPerceptron
+
+    torch.jit.set_fusion_strategy([("STATIC", 0)])
     model = MultiLayerPerceptron(
         input_dim=int(params["nn_input_dim"]), hidden_size=int(params["hidden_size"]),
         hidden_layers=int(params["hidden_layers"]), output_dim=int(params["nn_output_dim"]),

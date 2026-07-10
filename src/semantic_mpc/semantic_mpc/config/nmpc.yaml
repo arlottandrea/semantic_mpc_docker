@@ -12,6 +12,10 @@ nn_output_temperature: 0.4
 nn_threshold: 5.0
 nn_gate_slope: 10.0
 model_device: "cuda"
+# L4CasADi deployment checkpoint. Leave nn_model_path empty to select the
+# highest compatible best_model_epoch_*.pth under nn_model_dir.
+nn_model_dir: "/models/nmpc/fog/yaw_enriched/5m"
+nn_model_path: ""
 nn_output_labels: ["raw_nothing", "raw_raw", "raw_ripe", "ripe_nothing", "ripe_raw", "ripe_ripe"]
 
 mpc_horizon: 3
@@ -48,6 +52,10 @@ yaw_movement_weight: 0.005
 acceleration_regularization_weight: 0.0001
 information_gain_weight: 1.5
 information_discount: 0.85
+# Explicit time pressure: expected entropy area-under-curve over the horizon.
+# Higher values prefer viewpoints that reduce uncertainty earlier, not only by
+# the end of the prediction window.
+entropy_time_pressure_weight: 0.5
 # Gaussian covariance-map exploration. The map is evaluated analytically at
 # horizon states, avoiding grid interpolation artifacts. Covariance is
 # 4*p(ripe)*p(raw), so already-classified trees stop attracting the vehicle.

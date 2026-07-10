@@ -49,18 +49,30 @@ class NmpcOptimizer:
         return command
 
     @staticmethod
-    def perception_features(robot_pose, tree_position):
-        """Build the exact ``[x, y, yaw]`` feature used by MLP training.
+    def relative_perception_yaw(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Yaw feature used by the MLP: bearing-to-tree minus absolute yaw."""
+        direction_to_tree = ca.atan2(
+            tree_position[1] - robot_pose[1],
+            tree_position[0] - robot_pose[0],
+        )
+        relative_yaw = direction_to_tree - robot_pose[2] - camera_yaw_offset
+        return ca.atan2(ca.sin(relative_yaw), ca.cos(relative_yaw))
 
-        Training CSV coordinates are the drone position relative to a tree in
-        a world-aligned frame.  The yaw column is the drone heading in that
-        same frame, not the bearing to the tree.  Wrapping is differentiable
-        almost everywhere and is equivalent under the model's sin/cos yaw
-        encoding.
+    @staticmethod
+    def perception_features(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Build the exact ``[relative_x, relative_y, relative_yaw]`` MLP input.
+
+        The optimizer state stores absolute yaw.  Only the MLP feature yaw is
+        converted to the training convention: zero means the camera faces the
+        tree, after applying ``camera_yaw_offset``.
         """
         relative_position = robot_pose[:2] - tree_position[:2]
-        wrapped_yaw = ca.atan2(ca.sin(robot_pose[2]), ca.cos(robot_pose[2]))
-        return ca.horzcat(relative_position.T, wrapped_yaw)
+        relative_yaw = NmpcOptimizer.relative_perception_yaw(
+            robot_pose,
+            tree_position,
+            camera_yaw_offset,
+        )
+        return ca.horzcat(relative_position.T, relative_yaw)
 
     def __init__(self, params, l4c_nn):
         self.params = params
@@ -198,6 +210,11 @@ class NmpcOptimizer:
             joint0 = prior[:, 0] * likelihood_if_class0[:, observation]
             joint1 = prior[:, 1] * likelihood_if_class1[:, observation]
             observation_probability = joint0 + joint1
+            if likelihood_if_class0.size2() == 3 and observation == 0:
+                # No-detection means the sensor did not observe fruit evidence.
+                # Do not let class-dependent "nothing" logits classify ripe/raw.
+                expected_entropy += observation_probability * self.entropy_target(prior)
+                continue
             safe_probability = ca.fmax(eps, observation_probability)
             posterior = ca.horzcat(
                 joint0 / safe_probability,
@@ -214,6 +231,20 @@ class NmpcOptimizer:
         total = ca.MX.zeros(entropies[0].size1(), 1)
         for step, entropy in enumerate(entropies):
             total += (discount ** step) * entropy
+        return total
+
+    @staticmethod
+    def entropy_time_pressure_cost(entropies, dt=1.0):
+        """Entropy AUC: penalize remaining uncertain for longer.
+
+        Unlike a terminal entropy penalty, this cost is lower when the same
+        entropy reduction happens earlier in the horizon.
+        """
+        if not entropies:
+            return ca.MX.zeros(1, 1)
+        total = ca.MX.zeros(entropies[0].size1(), 1)
+        for entropy in entropies:
+            total += float(dt) * entropy
         return total
 
     def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
@@ -238,6 +269,14 @@ class NmpcOptimizer:
                     joint0 = branch_prior[:, 0] * class0[:, observation]
                     joint1 = branch_prior[:, 1] * class1[:, observation]
                     observation_probability = joint0 + joint1
+                    if class0.size2() == 3 and observation == 0:
+                        # Preserve ripe/raw belief when the realized outcome is
+                        # "nothing"; absence is a visibility outcome, not class
+                        # evidence.
+                        next_branches.append(
+                            (branch_probability * observation_probability, branch_prior)
+                        )
+                        continue
                     safe_probability = ca.fmax(eps, observation_probability)
                     posterior = ca.horzcat(
                         joint0 / safe_probability,
@@ -290,9 +329,12 @@ class NmpcOptimizer:
         if np.any((categories < 0) | (categories > 2)):
             raise ValueError("observation categories must be in {0, 1, 2}")
         rows = np.arange(len(categories))
-        return np.column_stack(
+        likelihoods = np.column_stack(
             (output[rows, 3 + categories], output[rows, categories])
         )
+        nothing = categories == 0
+        likelihoods[nothing, :] = 1.0
+        return likelihoods
 
     def mpc_opt(
         self,
@@ -343,6 +385,9 @@ class NmpcOptimizer:
         )
         information_gain_weight = float(self.params["information_gain_weight"])
         information_discount = float(self.params["information_discount"])
+        entropy_time_pressure_weight = float(
+            self.params.get("entropy_time_pressure_weight", 0.0)
+        )
         exploration_weight = float(self.params["exploration_weight"])
         exploration_sigma = max(float(self.params["exploration_sigma"]), 1e-6)
         attraction_weight = float(self.params["attraction_weight"])
@@ -392,11 +437,20 @@ class NmpcOptimizer:
             nn_batch = []
             for j in range(self.num_target_trees):
                 diff = X[:2, i + 1] - target_param[:, j]
+                dist_sq_target = ca.sumsqr(diff)
+                opti.subject_to(
+                    dist_sq_target + (1.0 - target_mask_param[j]) * 1e6
+                    >= safe_distance ** 2
+                )
                 distances_sq.append(
-                    ca.sumsqr(diff) + (1.0 - target_mask_param[j]) * 1e6 + 1e-6
+                    dist_sq_target + (1.0 - target_mask_param[j]) * 1e6 + 1e-6
                 )
                 nn_batch.append(
-                    self.perception_features(X[:3, i + 1], target_param[:, j])
+                    self.perception_features(
+                        X[:3, i + 1],
+                        target_param[:, j],
+                        camera_yaw_offset,
+                    )
                 )
             ca_batch.append(ca.vcat([*nn_batch]))
 
@@ -503,6 +557,14 @@ class NmpcOptimizer:
             1.0,
             ca.sum1(target_mask_param),
         )
+        entropy_time_pressure_cost = self.entropy_time_pressure_cost(
+            horizon_entropies,
+            dt=self.dt,
+        )
+        entropy_time_pressure_objective = ca.dot(
+            target_mask_param,
+            entropy_time_pressure_cost,
+        ) / ca.fmax(1.0, ca.sum1(target_mask_param))
 
         terminal_distance_excess = self.smooth_positive(
             ca.sqrt(self.smooth_positive(terminal_min_dist_sq)) - observation_range
@@ -511,6 +573,7 @@ class NmpcOptimizer:
         opti.minimize(
             obj
             + information_gain_weight * entropy_objective
+            + entropy_time_pressure_weight * entropy_time_pressure_objective
             - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
             + camera_facing_weight * terminal_camera_cost
