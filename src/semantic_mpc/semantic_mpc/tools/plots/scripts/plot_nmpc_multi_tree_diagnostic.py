@@ -55,8 +55,12 @@ def multi_tree_params(args):
             "acceleration_regularization_weight": 1e-5,
             "information_gain_weight": float(args.information_gain_weight),
             "entropy_time_pressure_weight": float(args.entropy_time_pressure_weight),
-            "exploration_weight": 0.0,
-            "attraction_weight": 0.0,
+            # The information objective is range-gated and therefore has no
+            # useful translational gradient for distant targets.  These small
+            # global-progress terms bring the robot into sensing range; the
+            # 2x2 expected-entropy objective then chooses the informative pose.
+            "exploration_weight": float(args.exploration_weight),
+            "attraction_weight": float(args.attraction_weight),
             "camera_facing_weight": 0.5,
             "observation_standoff_weight": 0.2,
             "running_camera_facing_weight": 0.1,
@@ -105,10 +109,17 @@ def orchard_positions(count, spacing=4.5):
     return points
 
 
-def default_true_classes(count):
+def default_true_classes(count, pattern="alternating"):
+    if pattern == "all-ripe":
+        return np.full(int(count), "ripe", dtype=object)
+    if pattern == "all-raw":
+        return np.full(int(count), "raw", dtype=object)
     labels = []
     for index in range(int(count)):
-        labels.append("ripe" if index % 2 == 0 else "raw")
+        ripe = index % 2 == 0
+        if pattern == "inverted":
+            ripe = not ripe
+        labels.append("ripe" if ripe else "raw")
     return np.asarray(labels, dtype=object)
 
 
@@ -179,7 +190,7 @@ def run_multi_tree_diagnostic(args):
     args.obstacles = min(int(args.obstacles), int(args.tree_count))
     params = multi_tree_params(args)
     trees = orchard_positions(args.tree_count, args.tree_spacing)
-    true_classes = default_true_classes(args.tree_count)
+    true_classes = default_true_classes(args.tree_count, args.class_pattern)
     state = initial_state_for_orchard(trees, params, flip_yaw=args.flip_start_yaw)
     initial_state = state.copy()
     beliefs = np.full((len(trees), 2), 0.5, dtype=float)
@@ -500,6 +511,11 @@ def main():
     parser.add_argument("--output-dir", default=str(ROOT / "outputs" / "nmpc_multi_tree_diagnostic"))
     parser.add_argument("--tree-count", type=int, default=5)
     parser.add_argument("--tree-spacing", type=float, default=4.5)
+    parser.add_argument(
+        "--class-pattern",
+        choices=("alternating", "inverted", "all-ripe", "all-raw"),
+        default="alternating",
+    )
     parser.add_argument("--active-targets", type=int, default=2)
     parser.add_argument("--obstacles", type=int, default=5)
     parser.add_argument("--iterations", type=int, default=40)
@@ -509,6 +525,8 @@ def main():
     parser.add_argument("--confidence-threshold", type=float, default=0.9975245006578829)
     parser.add_argument("--information-gain-weight", type=float, default=20.0)
     parser.add_argument("--entropy-time-pressure-weight", type=float, default=20.0)
+    parser.add_argument("--exploration-weight", type=float, default=0.05)
+    parser.add_argument("--attraction-weight", type=float, default=0.2)
     parser.add_argument("--max-velocity", type=float, default=1.75)
     parser.add_argument("--max-yaw-velocity-deg", type=float, default=90.0)
     parser.add_argument("--max-accel-xy", type=float, default=2.0)

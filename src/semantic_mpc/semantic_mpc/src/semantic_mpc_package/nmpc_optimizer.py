@@ -294,7 +294,7 @@ class NmpcOptimizer:
 
     @staticmethod
     def observation_likelihoods(structured_output):
-        """Read a flattened 2x3 conditional observation matrix.
+        """Read a flattened 2x2 conditional observation matrix.
 
         Model rows are true ``[raw, ripe]`` and columns are observations
         ``[raw, ripe]``. Belief columns are ordered ``[ripe, raw]``.
@@ -311,12 +311,21 @@ class NmpcOptimizer:
         scores = np.asarray(class_scores, dtype=float)
         if scores.ndim != 2 or scores.shape[1] != 2:
             raise ValueError("class_scores must have shape N x 2 in [ripe, raw] order")
-        if not np.all(np.isfinite(scores)):
-            raise ValueError("class_scores must contain only finite values")
+        missing = np.all(np.isnan(scores), axis=1)
+        if np.any(np.any(np.isnan(scores), axis=1) & ~missing):
+            raise ValueError("missing observations must use [nan, nan]")
+        finite = ~missing
+        if np.any(~np.isfinite(scores[finite])) or np.any(scores[finite] < 0.0):
+            raise ValueError("finite class scores must be non-negative")
+        totals = np.sum(scores[finite], axis=1)
+        if np.any(totals <= 0.0):
+            raise ValueError("finite class-score rows must have positive mass")
+        normalized = scores.copy()
+        normalized[finite] /= totals[:, None]
         categories = np.full(len(scores), -1, dtype=int)
-        decisive = np.abs(scores[:, 0] - scores[:, 1]) > float(decision_margin)
-        categories[decisive & (scores[:, 1] > scores[:, 0])] = 0
-        categories[decisive & (scores[:, 0] > scores[:, 1])] = 1
+        decisive = finite & (np.abs(normalized[:, 0] - normalized[:, 1]) > float(decision_margin))
+        categories[decisive & (normalized[:, 1] > normalized[:, 0])] = 0
+        categories[decisive & (normalized[:, 0] > normalized[:, 1])] = 1
         return categories
 
     @staticmethod

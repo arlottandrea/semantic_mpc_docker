@@ -182,6 +182,15 @@ class NmpcOptimizerTest(unittest.TestCase):
         likelihoods = NmpcOptimizer.realized_likelihoods(model, categories)
         np.testing.assert_allclose(likelihoods, [[1.0, 1.0], [0.2, 0.7], [0.9, 0.4]])
 
+    def test_missing_and_ambiguous_scores_mask_binary_update(self):
+        scores = np.array([[np.nan, np.nan], [4.0, 4.0], [1.0, 3.0]])
+        categories = NmpcOptimizer.observed_categories(scores, decision_margin=0.05)
+        np.testing.assert_array_equal(categories, [-1, -1, 0])
+
+    def test_partially_missing_score_row_is_rejected(self):
+        with self.assertRaises(ValueError):
+            NmpcOptimizer.observed_categories([[np.nan, 0.5]])
+
     def test_horizon_entropy_propagates_sequential_bayes_updates(self):
         optimizer = object.__new__(NmpcOptimizer)
         optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
