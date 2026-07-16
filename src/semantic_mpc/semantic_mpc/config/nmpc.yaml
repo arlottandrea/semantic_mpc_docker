@@ -1,26 +1,43 @@
 initial_randomic: true
 run_dir: "/runs/nmpc_runs"
 
-hidden_size: 64
-hidden_layers: 3
+hidden_size: 128
+hidden_layers: 4
 nn_input_dim: 3
-nn_output_dim: 2
+nn_output_dim: 4
+nn_yaw_harmonics: 4
+nn_include_alignment_features: true
+nn_output_temperature: 0.4
 # The surrogate confidence gate must match the RL observation range.
 nn_threshold: 5.0
 nn_gate_slope: 10.0
 model_device: "cuda"
-nn_output_labels: ["ripe", "raw"]
+# L4CasADi deployment checkpoint. Leave nn_model_path empty to select the
+# highest compatible best_model_epoch_*.pth under nn_model_dir.
+nn_model_dir: "/models/nmpc/fog/yaw_enriched/5m"
+nn_model_path: ""
+nn_output_labels: ["raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe"]
 
-mpc_horizon: 5
+mpc_horizon: 3
 state_dim: 3
 control_dim: 3
 optimizer_state_dim: 6
-# Match the RL policy observation cardinality (k_obs=5). Padded target slots
-# are explicitly masked and do not duplicate objective weight.
-num_target_trees: 5
-num_obstacle_trees: 5
+# NMPC optimizes this many active targets per solve. Use 1 for the faster
+# one-target inference path that succeeded in the 5x5 gym test; increase this
+# to evaluate multi-target belief-space optimization.
+active_target_count: 1
+active_obstacle_count: 5
 sim_steps: 1200
 belief_update_period: 1
+# A failed nonlinear solve commands a stationary hold and forces a cold
+# rebuild. Abort only after this many consecutive failures.
+solver_failure_limit: 5
+# Low-pass coefficient for the velocity reconstructed from Unity TF poses.
+# 1.0 is unfiltered finite differencing; lower values reject pose jitter.
+velocity_estimate_alpha: 0.6
+# If ripe/raw detector scores differ by no more than this, the realized
+# categorical observation is "nothing"; otherwise the larger class wins.
+observation_decision_margin: 0.05
 initial_pose_margin: 1.5
 initial_pose_sleep: 1.5
 wait_sleep: 0.05
@@ -30,16 +47,38 @@ field_margin: 3.0
 max_heading_abs: 9.42477796077
 # Interpretable counterparts of the RL reward. Information gain and approach
 # are benefits (subtracted by the optimizer); motion and acceleration are costs.
-movement_weight: 0.01
-yaw_movement_weight: 0.01
+movement_weight: 0.005
+yaw_movement_weight: 0.005
 acceleration_regularization_weight: 0.0001
-information_gain_weight: 1.0
-information_discount: 0.99
-attraction_weight: 0.1
+information_gain_weight: 1.5
+information_discount: 0.85
+# Explicit time pressure: expected entropy area-under-curve over the horizon.
+# Higher values prefer viewpoints that reduce uncertainty earlier, not only by
+# the end of the prediction window.
+entropy_time_pressure_weight: 0.5
+# Gaussian covariance-map exploration. The map is evaluated analytically at
+# horizon states, avoiding grid interpolation artifacts. Covariance is
+# 4*p(ripe)*p(raw), so already-classified trees stop attracting the vehicle.
+exploration_weight: 0.25
+exploration_sigma: 5.0
+attraction_weight: 1.0
+# Smooth terminal orientation prior. Offset is camera forward axis relative to
+# robot yaw (0 for forward-facing, pi for rear-facing cameras).
+camera_facing_weight: 2.0
+camera_yaw_offset: 0.0
+camera_activation_sigma: 5.0
+observation_standoff: 4.0
+observation_standoff_weight: 1.0
+# Running yaw/standoff terms are available but disabled by default; the
+# orbit term prevents stationary in-range solutions and matched the 5x5 gym
+# baseline behavior best.
+running_camera_facing_weight: 1.0
+running_observation_standoff_weight: 0.25
+orbit_velocity_weight: 0.25
 ipopt:
   tol: 1.0e-6
   warm_start_init_point: "yes"
-  print_level: 0
+  print_level: 1
   sb: "no"
   warm_start_bound_push: 1.0e-8
   warm_start_mult_bound_push: 1.0e-8
@@ -47,7 +86,13 @@ ipopt:
   bound_relax_factor: 1.0e-9
   hessian_approximation: "limited-memory"
   mu_strategy: "monotone"
-  max_iter: 1000
+  # The neural objective is non-convex. For receding-horizon control, a
+  # feasible point with modest stationarity error is preferable to blocking
+  # the ROS control loop for 1000 iterations.
+  acceptable_tol: 5.0e-2
+  acceptable_iter: 3
+  max_iter: 30
+  max_cpu_time: 0.18
 
 map_frame: "map"
 base_frame: "drone_base_link"
@@ -55,6 +100,11 @@ tree_scores_topic: "tree_scores"
 cmd_pose_topic: "cmd/pose"
 predicted_path_topic: "predicted_path"
 tree_markers_topic: "tree_markers"
+# NMPC visualization publishers. These are independent so path and belief
+# markers can be enabled separately. The period is measured in control steps.
+publish_predicted_path: false
+publish_tree_markers: false
+visualization_publish_period: 5
 tree_service: "/obj_pose_srv"
 
 wandb_project: "semantic_mpc"

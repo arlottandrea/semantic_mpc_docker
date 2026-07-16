@@ -17,7 +17,7 @@ from semantic_mpc_package.perception_model import MultiLayerPerceptron
 
 def test_shared_model_returns_structured_probabilities():
     output = MultiLayerPerceptron()(torch.zeros(4, 3))
-    assert output.shape == (4, 3)
+    assert output.shape == (4, 4)
     assert torch.all((output >= 0.0) & (output <= 1.0))
 
 
@@ -25,7 +25,8 @@ def test_visibility_gate_rejects_out_of_range_pose():
     output = MultiLayerPerceptron(threshold=5.0, gate_slope=10.0)(
         torch.tensor([[100.0, 0.0, 0.0]])
     )
-    assert output[0, 0] < 1e-6
+    rows = output.reshape(1, 2, 2)
+    assert torch.allclose(rows, torch.full((1, 2, 2), 0.5), atol=1e-6)
 
 
 def test_empty_detection_score_is_neutral_after_generator_offset():

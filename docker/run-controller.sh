@@ -21,10 +21,11 @@ if [[ "${controller}" == "rl" ]]; then
 fi
 
 if [[ "${controller}" == "nmpc" ]]; then
-  shopt -s nullglob
-  perception=(/models/nmpc/best_model_epoch_*.pth)
+  shopt -s nullglob globstar
+  perception=(/models/nmpc/**/best_model_epoch_*.pth)
+  shopt -u nullglob globstar
   if (( ${#perception[@]} == 0 )); then
-    echo "ERROR: NMPC requires /models/nmpc/best_model_epoch_*.pth" >&2
+    echo "ERROR: NMPC requires /models/nmpc/**/best_model_epoch_*.pth" >&2
     exit 66
   fi
 

@@ -49,6 +49,29 @@ GPU mode:
 ./scripts/run.sh nmpc
 ```
 
+The equivalent direct Docker invocation (without Compose) is:
+
+```bash
+docker build -t semantic-mpc-runtime -f docker/Dockerfile .
+docker run --rm --init --gpus all \
+  -p 127.0.0.1:10000:10000 \
+  -e YOLO_DEVICE=cuda -e NMPC_DEVICE=cuda \
+  -e ROS_HOME=/runs/ros -e ROS_LOG_DIR=/runs/ros/log \
+  -v "$PWD/models:/models:ro" -v "$PWD/runs:/runs" \
+  -v "$PWD/src/semantic_mpc/semantic_mpc/config:/workspace/src/semantic_mpc/semantic_mpc/config:ro" \
+  semantic-mpc-runtime nmpc
+```
+
+Unity must connect its ROS TCP Connector to the Docker host on port `10000`.
+The NMPC runtime uses a six-output conditional sensor model, exact
+`nothing/raw/ripe` finite-horizon Bayes expectation, measured-pose feedback,
+and a stationary recovery command if IPOPT fails. The first solve is slower
+because the exact belief tree has `3^mpc_horizon` observation branches; keep
+the default horizon at 5 unless the control-period budget has been measured.
+For NMPC runtime parameters, edit `src/semantic_mpc/semantic_mpc/config/nmpc.yaml`.
+`active_target_count` controls how many targets are optimized and inferred per
+solve; the default is `1` for the faster one-target path validated in gym.
+
 CPU mode is useful for baseline/RL validation, but YOLO will be substantially slower:
 
 ```bash
@@ -195,7 +218,7 @@ Do not expose the TCP endpoint on `0.0.0.0` at the host level unless remote Unit
 
 The Docker image contains code but no runtime models. Compose mounts `models/` read-only. Git LFS versions the available YOLO and RL files.
 
-NMPC will intentionally refuse to start until the compatible two-output checkpoint exists:
+NMPC will intentionally refuse to start until the compatible structured checkpoint exists:
 
 ```text
 models/nmpc/best_model_epoch_<N>.pth
@@ -242,4 +265,4 @@ Confirm redistribution rights for the YOLO weight and trained checkpoints before
 - Unity cannot connect: ensure the container is healthy and Unity uses `127.0.0.1`, not the container IP.
 - No images/detections: verify Unity publishes `/agent_0/camera/color/image/compressed` and depth/camera-info topics.
 - Data association waits forever: Unity must provide `/obj_pose_srv` and the required TF frames.
-- NMPC exits immediately: install the two-output checkpoint described above.
+- NMPC exits immediately: install the structured checkpoint described above.

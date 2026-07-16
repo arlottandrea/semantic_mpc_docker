@@ -1,8 +1,79 @@
+import math
+
 import casadi as ca
 import numpy as np
 
 
 class NmpcOptimizer:
+    _SMOOTH_EPS = 1e-8
+
+    @staticmethod
+    def smooth_positive(value, eps=_SMOOTH_EPS):
+        """Differentiable approximation of max(0, value)."""
+        return 0.5 * (value + ca.sqrt(value * value + eps))
+
+    @staticmethod
+    def smooth_min(left, right, eps=_SMOOTH_EPS):
+        """Differentiable approximation of min(left, right)."""
+        delta = left - right
+        return 0.5 * (left + right - ca.sqrt(delta * delta + eps))
+
+    @staticmethod
+    def camera_facing_error(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Smooth periodic cost: zero when the camera points at the tree."""
+        direction_to_tree = ca.atan2(
+            tree_position[1] - robot_pose[1],
+            tree_position[0] - robot_pose[0],
+        )
+        error = direction_to_tree - robot_pose[2] - camera_yaw_offset
+        return 1.0 - ca.cos(error)
+
+    @staticmethod
+    def bounded_pose_command(current_pose, desired_pose, dt, max_velocity, max_yaw_velocity):
+        """Bound an absolute pose setpoint to one physically reachable step."""
+        current = np.asarray(current_pose, dtype=float).reshape(-1)[:3]
+        desired = np.asarray(desired_pose, dtype=float).reshape(-1)[:3]
+        command = current.copy()
+        delta_xy = desired[:2] - current[:2]
+        distance = np.linalg.norm(delta_xy)
+        max_distance = max(0.0, float(max_velocity) * float(dt))
+        if distance > max_distance and distance > 0.0:
+            delta_xy *= max_distance / distance
+        command[:2] += delta_xy
+        yaw_delta = math.atan2(
+            math.sin(desired[2] - current[2]), math.cos(desired[2] - current[2])
+        )
+        max_yaw_step = max(0.0, float(max_yaw_velocity) * float(dt))
+        command[2] += np.clip(yaw_delta, -max_yaw_step, max_yaw_step)
+        command[2] = math.atan2(math.sin(command[2]), math.cos(command[2]))
+        return command
+
+    @staticmethod
+    def relative_perception_yaw(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Yaw feature used by the MLP: bearing-to-tree minus absolute yaw."""
+        direction_to_tree = ca.atan2(
+            tree_position[1] - robot_pose[1],
+            tree_position[0] - robot_pose[0],
+        )
+        relative_yaw = direction_to_tree - robot_pose[2] - camera_yaw_offset
+        return ca.atan2(ca.sin(relative_yaw), ca.cos(relative_yaw))
+
+    @staticmethod
+    def perception_features(robot_pose, tree_position, camera_yaw_offset=0.0):
+        """Build the exact ``[relative_x, relative_y, relative_yaw]`` MLP input.
+
+        The optimizer state stores absolute yaw.  Only the MLP feature yaw is
+        converted to the training convention: zero means the camera faces the
+        tree, after applying ``camera_yaw_offset``.
+        """
+        relative_position = robot_pose[:2] - tree_position[:2]
+        relative_yaw = NmpcOptimizer.relative_perception_yaw(
+            robot_pose,
+            tree_position,
+            camera_yaw_offset,
+        )
+        return ca.horzcat(relative_position.T, relative_yaw)
+
     def __init__(self, params, l4c_nn):
         self.params = params
         self.l4c_nn = l4c_nn
@@ -90,31 +161,180 @@ class NmpcOptimizer:
         return np.where(update_mask[:, None], posterior, prior)
 
     @staticmethod
-    def entropy_f(num_targets):
-        p = ca.MX.sym("input_entropy_f{}_dim".format(num_targets), num_targets, 2)
-        eps = 1e-6
-        p_clipped = ca.fmax(eps, ca.fmin(1 - eps, p))
-        entropy_per_target = -ca.sum2(p_clipped * (ca.log(p_clipped) / ca.log(2)))
-        return ca.Function("entropy_f_{}_dim".format(num_targets), [p], [entropy_per_target])
+    def entropy_f(num_targets, num_classes=2):
+        """Conditional ripe/raw entropy, excluding an optional nothing class.
+
+        Columns must be ordered ``[ripe, raw]`` or ``[ripe, raw, nothing]``.
+        The first two columns are re-normalized by their fruit probability
+        mass.  A row containing only ``nothing`` has zero fruit entropy.
+        """
+        if num_classes not in (2, 3):
+            raise ValueError("fruit entropy requires 2 or 3 probability columns")
+        p = ca.MX.sym(
+            "input_entropy_f{}_c{}".format(num_targets, num_classes),
+            num_targets,
+            num_classes,
+        )
+        eps = 1e-8
+        fruit = ca.fmax(0.0, p[:, :2])
+        fruit_mass = ca.sum2(fruit)
+        conditional = fruit / ca.repmat(ca.fmax(eps, fruit_mass), 1, 2)
+        log_terms = ca.if_else(
+            conditional > eps,
+            conditional * (ca.log(ca.fmax(eps, conditional)) / ca.log(2)),
+            0.0,
+        )
+        entropy_per_target = ca.if_else(
+            fruit_mass > eps,
+            -ca.sum2(log_terms),
+            0.0,
+        )
+        return ca.Function(
+            "entropy_f_{}_c{}".format(num_targets, num_classes),
+            [p],
+            [entropy_per_target],
+        )
 
     def expected_posterior_entropy(self, prior, likelihood_if_class0, likelihood_if_class1):
         """Expected entropy after one measurement, marginalizing both outcomes.
 
         Rows are targets. Prior columns are the two classes. Each likelihood
-        matrix contains P(measurement | true class) for the two outcomes.
+        matrix contains P(measurement | true class).  The number of outcomes
+        is read from the matrices (the deployed model uses nothing/raw/ripe).
         """
+        if likelihood_if_class0.size2() != likelihood_if_class1.size2():
+            raise ValueError("class likelihoods must have equal outcome counts")
         eps = 1e-9
         expected_entropy = ca.MX.zeros(prior.size1(), 1)
-        for observation in range(2):
+        for observation in range(likelihood_if_class0.size2()):
             joint0 = prior[:, 0] * likelihood_if_class0[:, observation]
             joint1 = prior[:, 1] * likelihood_if_class1[:, observation]
-            observation_probability = ca.fmax(eps, joint0 + joint1)
+            observation_probability = joint0 + joint1
+            if likelihood_if_class0.size2() == 3 and observation == 0:
+                # No-detection means the sensor did not observe fruit evidence.
+                # Do not let class-dependent "nothing" logits classify ripe/raw.
+                expected_entropy += observation_probability * self.entropy_target(prior)
+                continue
+            safe_probability = ca.fmax(eps, observation_probability)
             posterior = ca.horzcat(
-                joint0 / observation_probability,
-                joint1 / observation_probability,
+                joint0 / safe_probability,
+                joint1 / safe_probability,
             )
             expected_entropy += observation_probability * self.entropy_target(posterior)
         return expected_entropy
+
+    @staticmethod
+    def discounted_entropy_cost(entropies, discount=0.9):
+        """Accumulate expected entropies with stronger weight on earlier steps."""
+        if not entropies:
+            return ca.MX.zeros(1, 1)
+        total = ca.MX.zeros(entropies[0].size1(), 1)
+        for step, entropy in enumerate(entropies):
+            total += (discount ** step) * entropy
+        return total
+
+    @staticmethod
+    def entropy_time_pressure_cost(entropies, dt=1.0):
+        """Entropy AUC: penalize remaining uncertain for longer.
+
+        Unlike a terminal entropy penalty, this cost is lower when the same
+        entropy reduction happens earlier in the horizon.
+        """
+        if not entropies:
+            return ca.MX.zeros(1, 1)
+        total = ca.MX.zeros(entropies[0].size1(), 1)
+        for entropy in entropies:
+            total += float(dt) * entropy
+        return total
+
+    def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
+        """Expected posterior entropy after each sequential horizon measurement.
+
+        The belief tree branches over both possible observations.  This is
+        exact for the binary model and, unlike summing one-step gains computed
+        from the same prior, does not count the same uncertainty repeatedly.
+        """
+        if len(likelihoods_if_class0) != len(likelihoods_if_class1):
+            raise ValueError("class likelihood horizons must have equal length")
+
+        eps = 1e-9
+        branches = [(ca.MX.ones(prior.size1(), 1), prior)]
+        stage_entropies = []
+        for class0, class1 in zip(likelihoods_if_class0, likelihoods_if_class1):
+            next_branches = []
+            if class0.size2() != class1.size2():
+                raise ValueError("class likelihoods must have equal outcome counts")
+            for branch_probability, branch_prior in branches:
+                for observation in range(class0.size2()):
+                    joint0 = branch_prior[:, 0] * class0[:, observation]
+                    joint1 = branch_prior[:, 1] * class1[:, observation]
+                    observation_probability = joint0 + joint1
+                    if class0.size2() == 3 and observation == 0:
+                        # Preserve ripe/raw belief when the realized outcome is
+                        # "nothing"; absence is a visibility outcome, not class
+                        # evidence.
+                        next_branches.append(
+                            (branch_probability * observation_probability, branch_prior)
+                        )
+                        continue
+                    safe_probability = ca.fmax(eps, observation_probability)
+                    posterior = ca.horzcat(
+                        joint0 / safe_probability,
+                        joint1 / safe_probability,
+                    )
+                    next_branches.append(
+                        (branch_probability * observation_probability, posterior)
+                    )
+            branches = next_branches
+            expected_entropy = ca.MX.zeros(prior.size1(), 1)
+            for branch_probability, posterior in branches:
+                expected_entropy += branch_probability * self.entropy_target(posterior)
+            stage_entropies.append(expected_entropy)
+        return stage_entropies
+
+    @staticmethod
+    def observation_likelihoods(structured_output):
+        """Read a flattened 2x3 conditional observation matrix.
+
+        Model rows are true ``[raw, ripe]`` and columns are observations
+        ``[raw, ripe]``. Belief columns are ordered ``[ripe, raw]``.
+        """
+        if structured_output.size2() != 4:
+            raise ValueError("conditional observation model must have four columns")
+        likelihood_if_raw = structured_output[:, 0:2]
+        likelihood_if_ripe = structured_output[:, 2:4]
+        return likelihood_if_ripe, likelihood_if_raw
+
+    @staticmethod
+    def observed_categories(class_scores, decision_margin=0.05):
+        """Map detector scores [ripe, raw] to raw/ripe, or -1 if indecisive."""
+        scores = np.asarray(class_scores, dtype=float)
+        if scores.ndim != 2 or scores.shape[1] != 2:
+            raise ValueError("class_scores must have shape N x 2 in [ripe, raw] order")
+        if not np.all(np.isfinite(scores)):
+            raise ValueError("class_scores must contain only finite values")
+        categories = np.full(len(scores), -1, dtype=int)
+        decisive = np.abs(scores[:, 0] - scores[:, 1]) > float(decision_margin)
+        categories[decisive & (scores[:, 1] > scores[:, 0])] = 0
+        categories[decisive & (scores[:, 0] > scores[:, 1])] = 1
+        return categories
+
+    @staticmethod
+    def realized_likelihoods(structured_output, categories):
+        """Select P(observed category | ripe/raw) in belief-column order."""
+        output = np.asarray(structured_output, dtype=float)
+        categories = np.asarray(categories, dtype=int).reshape(-1)
+        if output.ndim != 2 or output.shape[1] != 4 or len(output) != len(categories):
+            raise ValueError("structured_output must be N x 4 and align with categories")
+        if np.any((categories < -1) | (categories > 1)):
+            raise ValueError("observation categories must be in {-1, 0, 1}")
+        rows = np.arange(len(categories))
+        safe_categories = np.maximum(categories, 0)
+        likelihoods = np.column_stack(
+            (output[rows, 2 + safe_categories], output[rows, safe_categories])
+        )
+        likelihoods[categories < 0, :] = 1.0
+        return likelihoods
 
     def mpc_opt(
         self,
@@ -165,10 +385,36 @@ class NmpcOptimizer:
         )
         information_gain_weight = float(self.params["information_gain_weight"])
         information_discount = float(self.params["information_discount"])
+        entropy_time_pressure_weight = float(
+            self.params.get("entropy_time_pressure_weight", 0.0)
+        )
+        exploration_weight = float(self.params["exploration_weight"])
+        exploration_sigma = max(float(self.params["exploration_sigma"]), 1e-6)
         attraction_weight = float(self.params["attraction_weight"])
+        camera_facing_weight = float(self.params["camera_facing_weight"])
+        camera_yaw_offset = float(self.params["camera_yaw_offset"])
+        camera_activation_sigma = max(
+            float(self.params["camera_activation_sigma"]), 1e-6
+        )
+        observation_standoff = max(float(self.params["observation_standoff"]), 1e-6)
+        observation_standoff_weight = float(
+            self.params["observation_standoff_weight"]
+        )
+        running_camera_facing_weight = float(
+            self.params.get("running_camera_facing_weight", 0.0)
+        )
+        running_observation_standoff_weight = float(
+            self.params.get("running_observation_standoff_weight", 0.0)
+        )
+        orbit_velocity_weight = float(self.params.get("orbit_velocity_weight", 0.0))
         obj = 0
-        information_gain_by_target = ca.MX.zeros(self.num_target_trees, 1)
+        exploration_reward = 0
+        running_camera_cost = 0.0
+        running_standoff_cost = 0.0
+        orbit_velocity_reward = 0.0
         terminal_min_dist_sq = None
+        terminal_camera_cost = 0.0
+        terminal_standoff_cost = 0.0
 
         opti.subject_to(X[:, 0] == X0)
         ca_batch = []
@@ -191,16 +437,84 @@ class NmpcOptimizer:
             nn_batch = []
             for j in range(self.num_target_trees):
                 diff = X[:2, i + 1] - target_param[:, j]
-                distances_sq.append(
-                    ca.sumsqr(diff) + (1.0 - target_mask_param[j]) * 1e6 + 1e-6
+                dist_sq_target = ca.sumsqr(diff)
+                opti.subject_to(
+                    dist_sq_target + (1.0 - target_mask_param[j]) * 1e6
+                    >= safe_distance ** 2
                 )
-                nn_batch.append(ca.horzcat(diff.T, X[2, i + 1]))
+                distances_sq.append(
+                    dist_sq_target + (1.0 - target_mask_param[j]) * 1e6 + 1e-6
+                )
+                nn_batch.append(
+                    self.perception_features(
+                        X[:3, i + 1],
+                        target_param[:, j],
+                        camera_yaw_offset,
+                    )
+                )
             ca_batch.append(ca.vcat([*nn_batch]))
 
             min_dist_sq = distances_sq[0]
             for j in range(1, self.num_target_trees):
-                min_dist_sq = ca.fmin(min_dist_sq, distances_sq[j])
+                min_dist_sq = self.smooth_min(min_dist_sq, distances_sq[j])
             terminal_min_dist_sq = min_dist_sq
+            # Continuous equivalent of sampling a Gaussian covariance grid.
+            # Bernoulli covariance is maximal at p=0.5 and vanishes as a tree
+            # becomes classified.  The target mask removes padded slots.
+            target_covariance = 4.0 * L0[:, 0] * L0[:, 1]
+            gaussian_covariance = ca.MX.zeros(self.num_target_trees, 1)
+            for j in range(self.num_target_trees):
+                gaussian_covariance[j] = ca.exp(
+                    -distances_sq[j] / (2.0 * exploration_sigma ** 2)
+                )
+            exploration_reward += information_discount ** i * ca.dot(
+                target_mask_param * target_covariance,
+                gaussian_covariance,
+            ) / ca.fmax(1.0, ca.sum1(target_mask_param))
+            camera_weights = ca.MX.zeros(self.num_target_trees, 1)
+            camera_errors = ca.MX.zeros(self.num_target_trees, 1)
+            standoff_errors = ca.MX.zeros(self.num_target_trees, 1)
+            orbit_rewards = ca.MX.zeros(self.num_target_trees, 1)
+            for j in range(self.num_target_trees):
+                diff_to_robot = X[:2, i + 1] - target_param[:, j]
+                distance_sq = ca.sumsqr(diff_to_robot) + 1e-6
+                camera_weights[j] = (
+                    target_mask_param[j]
+                    * target_covariance[j]
+                    * ca.exp(
+                        -distances_sq[j] / (2.0 * camera_activation_sigma ** 2)
+                    )
+                )
+                camera_errors[j] = self.camera_facing_error(
+                    X[:3, i + 1], target_param[:, j], camera_yaw_offset
+                )
+                distance = ca.sqrt(distances_sq[j])
+                standoff_errors[j] = (
+                    (distance - observation_standoff) / observation_standoff
+                ) ** 2
+                tangential_velocity = (
+                    -diff_to_robot[1] * X[3, i + 1]
+                    + diff_to_robot[0] * X[4, i + 1]
+                ) / ca.sqrt(distance_sq)
+                orbit_rewards[j] = (
+                    tangential_velocity
+                    / max(float(self.params["max_velocity"]), 1e-6)
+                ) ** 2
+            step_camera_cost = ca.dot(camera_weights, camera_errors) / ca.fmax(
+                1e-8, ca.sum1(camera_weights)
+            )
+            step_standoff_cost = ca.dot(
+                camera_weights, standoff_errors
+            ) / ca.fmax(1e-8, ca.sum1(camera_weights))
+            step_orbit_reward = ca.dot(
+                camera_weights, orbit_rewards
+            ) / ca.fmax(1e-8, ca.sum1(camera_weights))
+            running_camera_cost += information_discount ** i * step_camera_cost
+            running_standoff_cost += information_discount ** i * step_standoff_cost
+            orbit_velocity_reward += information_discount ** i * step_orbit_reward
+            if i == steps - 1:
+                terminal_camera_cost = step_camera_cost
+                terminal_standoff_cost = step_standoff_cost
             normalized_speed = ca.sqrt(ca.sumsqr(X[3:5, i + 1]) + 1e-8) / max(
                 float(self.params["max_velocity"]), 1e-6
             )
@@ -217,44 +531,56 @@ class NmpcOptimizer:
 
         nn_full_batch_input = ca.vcat(ca_batch)
         surrogate_output = self.l4c_nn(nn_full_batch_input)
+        surrogate_output_ripe, surrogate_output_raw = self.observation_likelihoods(
+            surrogate_output
+        )
 
+        likelihoods_ripe = []
+        likelihoods_raw = []
         for i in range(steps):
             start = i * self.num_target_trees
             stop = (i + 1) * self.num_target_trees
-            correct_ripe = surrogate_output[start:stop, 0]
-            correct_raw = surrogate_output[start:stop, 1]
-            likelihood_if_ripe = ca.horzcat(correct_ripe, 1.0 - correct_ripe)
-            likelihood_if_raw = ca.horzcat(1.0 - correct_raw, correct_raw)
-            expected_entropy = self.expected_posterior_entropy(
-                L0, likelihood_if_ripe, likelihood_if_raw
-            )
-            prior_entropy = self.entropy_target(L0)
-            information_gain_by_target += information_discount ** i * ca.fmax(
-                0.0,
-                prior_entropy - expected_entropy,
-            )
+            likelihoods_ripe.append(surrogate_output_ripe[start:stop, :])
+            likelihoods_raw.append(surrogate_output_raw[start:stop, :])
 
-        # Multiple predicted observations may concern the same tree. Cap their
-        # accumulated information by the tree's current entropy, since no
-        # planner can remove more uncertainty than is present initially.
-        bounded_information_gain = ca.fmin(
-            self.entropy_target(L0),
-            information_gain_by_target,
+        # Exact open-loop belief-space objective.  Every possible observation
+        # sequence is marginalized and Bayes' rule is applied recursively.
+        # Discounted entropy reductions reward information obtained earlier
+        # without counting the same uncertainty more than once.
+        horizon_entropies = self.expected_entropy_horizon(
+            L0, likelihoods_ripe, likelihoods_raw
         )
-        information_gain_objective = ca.dot(target_mask_param, bounded_information_gain) / ca.fmax(
+        discounted_entropy_cost = self.discounted_entropy_cost(
+            horizon_entropies, discount=information_discount
+        )
+        entropy_objective = ca.dot(target_mask_param, discounted_entropy_cost) / ca.fmax(
             1.0,
             ca.sum1(target_mask_param),
         )
+        entropy_time_pressure_cost = self.entropy_time_pressure_cost(
+            horizon_entropies,
+            dt=self.dt,
+        )
+        entropy_time_pressure_objective = ca.dot(
+            target_mask_param,
+            entropy_time_pressure_cost,
+        ) / ca.fmax(1.0, ca.sum1(target_mask_param))
 
-        terminal_distance_excess = ca.fmax(
-            0.0,
-            ca.sqrt(terminal_min_dist_sq) - observation_range,
+        terminal_distance_excess = self.smooth_positive(
+            ca.sqrt(self.smooth_positive(terminal_min_dist_sq)) - observation_range
         )
 
         opti.minimize(
             obj
-            - information_gain_weight * information_gain_objective
+            + information_gain_weight * entropy_objective
+            + entropy_time_pressure_weight * entropy_time_pressure_objective
+            - exploration_weight * exploration_reward
             + attraction_weight * terminal_distance_excess
+            + camera_facing_weight * terminal_camera_cost
+            + observation_standoff_weight * terminal_standoff_cost
+            + running_camera_facing_weight * running_camera_cost
+            + running_observation_standoff_weight * running_standoff_cost
+            - orbit_velocity_weight * orbit_velocity_reward
         )
         options = {"print_time": False, "ipopt": dict(self.params["ipopt"])}
         opti.solver("ipopt", options)
@@ -270,7 +596,50 @@ class NmpcOptimizer:
         )
         opti.set_value(P0, p0_val)
 
-        sol = opti.solve()
+        # A zero control sequence is a common stationary point of radial
+        # neural/grid potentials.  Give the cold solve a feasible-dynamics
+        # directional seed toward the nearest active uncertain target.
+        x0_np = np.asarray(x0, dtype=float).reshape(-1)
+        target_np = np.asarray(target_trees, dtype=float).reshape(self.num_target_trees, 2)
+        mask_np = np.asarray(target_mask, dtype=float).reshape(-1) > 0.5
+        u_seed = np.zeros((self.n_control, steps), dtype=float)
+        x_seed = np.zeros((self.n_state, steps + 1), dtype=float)
+        x_seed[:, 0] = x0_np
+        if np.any(mask_np):
+            active_targets = target_np[mask_np]
+            nearest = active_targets[
+                np.argmin(np.linalg.norm(active_targets - x0_np[:2], axis=1))
+            ]
+            direction = nearest - x0_np[:2]
+            direction_norm = np.linalg.norm(direction)
+            if direction_norm > 1e-9:
+                u_seed[:2, :] = (
+                    0.5 * float(self.params["max_accel_xy"]) * direction / direction_norm
+                )[:, None]
+                desired_yaw = math.atan2(direction[1], direction[0]) - float(
+                    self.params.get("camera_yaw_offset", 0.0)
+                )
+                yaw_error = math.atan2(
+                    math.sin(desired_yaw - x0_np[2]),
+                    math.cos(desired_yaw - x0_np[2]),
+                )
+                u_seed[2, :] = (
+                    0.5
+                    * float(self.params["max_accel_yaw"])
+                    * np.sign(yaw_error)
+                )
+        for i in range(steps):
+            acceleration = u_seed[:, i]
+            x_seed[:3, i + 1] = (
+                x_seed[:3, i]
+                + self.dt * x_seed[3:, i]
+                + 0.5 * self.dt ** 2 * acceleration
+            )
+            x_seed[3:, i + 1] = x_seed[3:, i] + self.dt * acceleration
+        opti.set_initial(U, u_seed)
+        opti.set_initial(X, x_seed)
+
+        sol = opti.solve_limited()
         mpc_step_func = opti.to_function(
             "mpc_step",
             inputs,

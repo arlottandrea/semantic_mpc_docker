@@ -103,5 +103,6 @@ install(DIRECTORY launch config
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(tests/test_nmpc_optimizer.py)
+  catkin_add_nosetests(tests/test_nmpc_mlp_casadi_integration.py)
 endif()
 

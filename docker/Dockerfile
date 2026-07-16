@@ -46,6 +46,13 @@ COPY docker /workspace/docker
 COPY scripts /workspace/scripts
 COPY mlp_pipeline /workspace/mlp_pipeline
 
+# Windows checkouts can copy CRLF shebangs into the Linux image, causing
+# /usr/bin/env to look for "python\r" or "bash\r" at roslaunch runtime.
+RUN find /workspace -type f \( \
+      -name "*.py" -o -name "*.sh" -o -name "*.launch" -o \
+      -name "*.yaml" -o -name "*.yml" -o -name "*.xml" \
+    \) -exec sed -i 's/\r$//' {} +
+
 # These links may point at absent build-time paths; Compose mounts the runtime
 # model directories at /models when the container starts.
 RUN rm -rf /workspace/src/semantic_mpc/semantic_mpc/src/semantic_mpc_package/models \

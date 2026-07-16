@@ -4,6 +4,7 @@
 import argparse
 import csv
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -59,6 +60,7 @@ def main(config_path):
 
     rows = []
     batch_size = int(cfg["batch_size"])
+    started_at = time.monotonic()
     for start in range(0, len(records), batch_size):
         batch_records = records[start:start + batch_size]
         tensors, images, ratio_pads, valid_records = [], [], [], []
@@ -110,6 +112,15 @@ def main(config_path):
             rows.append(completed)
             if cfg.get("save_annotations", True):
                 cv2.imwrite(str(annotations / image_path.name), image)
+        completed_count = min(start + len(batch_records), len(records))
+        if completed_count == len(records) or completed_count % (batch_size * 25) == 0:
+            elapsed = max(time.monotonic() - started_at, 1e-6)
+            print(
+                "YOLO {}/{} images ({:.1f} img/s)".format(
+                    completed_count, len(records), completed_count / elapsed
+                ),
+                flush=True,
+            )
     fields = list(records[0].keys())
     for field in ("Ripe_scores", "Raw_scores", "tree_score"):
         if field not in fields:

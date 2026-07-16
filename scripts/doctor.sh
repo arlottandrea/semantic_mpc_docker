@@ -33,7 +33,11 @@ if [[ ! -d runs/ros/log || ! -w runs/ros/log ]]; then
 fi
 
 if [[ "${controller}" == nmpc ]]; then
-  compgen -G 'models/nmpc/best_model_epoch_*.pth' >/dev/null || { echo "ERROR NMPC checkpoint is missing" >&2; errors=$((errors + 1)); }
+  check_file src/semantic_mpc/semantic_mpc/config/nmpc.yaml
+  shopt -s nullglob globstar
+  nmpc_checkpoints=(models/nmpc/**/best_model_epoch_*.pth)
+  shopt -u nullglob globstar
+  (( ${#nmpc_checkpoints[@]} > 0 )) || { echo "ERROR NMPC checkpoint is missing" >&2; errors=$((errors + 1)); }
 fi
 
 if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :${UNITY_TCP_PORT:-10000}" | tail -n +2 | grep -q .; then

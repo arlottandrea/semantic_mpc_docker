@@ -20,8 +20,9 @@ openpyxl = ">=3.1.5, <4"
 
 [tasks]
 build = "catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-# This task configures the MSVC vars, sets CUDACXX, and runs pip install
-build-l4casadi = { cmd = "pip install l4casadi --no-build-isolation", env = { CUDACXX = "$PIXI_PROJECT_ROOT/.pixi/envs/default/Library/bin/nvcc.exe" } }
+# This task configures MSVC via Pixi activation, then builds the local
+# L4CasADi checkout against Pixi's CUDA/PyTorch environment.
+build-l4casadi = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_l4casadi.ps1"
 [dependencies]
 ros-noetic-desktop = ">=1.5.0,<2"
 compilers = ">=1.8.0,<2"

@@ -4,10 +4,10 @@ device: auto
 dataset:
   # Manifest columns: x,y,yaw,image_path. Relative image paths are resolved
   # against the manifest directory. Use "latest" to select the newest CSV.
-  input_manifest: /data/raw/no_fog/TreeDatasetCNN.csv
+  input_manifest: /datasets/fog/5m/raw/TreeDatasetCNN.csv
   # This may equal input_manifest: the completed CSV is replaced atomically.
-  output_csv: /data/raw/no_fog/TreeDatasetCNN.csv
-  annotations_dir: /data/raw/no_fog/detections
+  output_csv: /datasets/fog/5m/raw/TreeDatasetCNN.csv
+  annotations_dir: /datasets/fog/5m/raw/detections
   weights: /models/yolo/apples.pt
   yolo_source: /workspace/src/yolov7-ros/src
   image_size: 640
@@ -16,31 +16,35 @@ dataset:
   iou_threshold: 0.7
   ripe_class: Ripe_Apple
   raw_class: Raw_Apple
-  score_midpoint: 5
+  score_midpoint: 7
   score_steepness: 10.0
   save_annotations: true
 
 training:
   input_csvs:
-    raw: /data/raw/no_fog/TreeDatasetCNN.csv
-    ripe: /data/ripe/no_fog/TreeDatasetCNN.csv
+    raw: /datasets/fog/5m/raw/TreeDatasetCNN.csv
+    ripe: /datasets/fog/5m/ripe/TreeDatasetCNN.csv
   output_dir: /models/nmpc
   # Avoid a stale higher-epoch file being selected by the NMPC runtime.
   replace_existing_checkpoints: true
   input_dim: 3
   # Structured outputs: [visibility, accuracy_raw, accuracy_ripe].
-  output_dim: 3
+  output_dim: 4
   # Supported values: structured, mse
   loss_function: structured
-  hidden_size: 64
-  hidden_layers: 3
+  hidden_size: 128
+  hidden_layers: 4
+  yaw_harmonics: 4
+  include_alignment_features: true
+  output_temperature: 0.4
+  informative_loss_weight: 6.0
   # Must match NMPC observation_range and nn_threshold.
   threshold: 5.0
   gate_slope: 10.0
   validation_split: 0.35
   batch_size: 32
   epochs: 20
-  learning_rate: 0.001
+  learning_rate: 0.0001
   # An isolated fruit is not considered an observation of the whole tree.
   min_detections_for_visibility: 3
   visibility_loss_weight: 1.0

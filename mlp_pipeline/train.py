@@ -43,6 +43,16 @@ def augment(x, y, fraction, margin, rng):
 
 def structured_loss(prediction, target, visibility_weight, semantic_weight):
     output_dim = int(prediction.shape[1])
+    if output_dim == 4:
+        likelihood = prediction.reshape(-1, 2, 2)
+        target_likelihood = target[:, :4].reshape(-1, 2, 2)
+        class_mask = target[:, 4:6]
+        row_weight = target[:, 6:8] if target.shape[1] >= 8 else torch.ones_like(class_mask)
+        cross_entropy = -(
+            target_likelihood * likelihood.clamp_min(1e-8).log()
+        ).sum(dim=-1)
+        weights = class_mask * row_weight
+        return (cross_entropy * weights).sum() / weights.sum().clamp_min(1.0)
     if output_dim >= 3:
         visibility = torch.nn.functional.binary_cross_entropy(
             prediction[:, 0], target[:, 0]
@@ -70,8 +80,30 @@ def structured_loss(prediction, target, visibility_weight, semantic_weight):
 
 
 def mse_loss(prediction, target, visibility_weight, semantic_weight):
-    output_dim = min(prediction.shape[1], target.shape[1])
-    return torch.nn.functional.mse_loss(prediction[:, :output_dim], target[:, :output_dim])
+    output_dim = int(prediction.shape[1])
+    if output_dim >= 3:
+        target_value = target[:, :3]
+    elif output_dim == 2:
+        target_value = target[:, 1:3]
+    else:
+        target_value = target[:, 1:2]
+    elementwise = torch.nn.functional.mse_loss(
+        prediction[:, :output_dim], target_value, reduction="none"
+    )
+    if output_dim == 1:
+        mask = target[:, 0:1]
+        active = mask > 0.5
+        informative = active & (target_value > 0.500001)
+        neutral = active & ~informative
+        group_losses = []
+        if torch.any(neutral):
+            group_losses.append(elementwise[neutral].mean())
+        if torch.any(informative):
+            group_losses.append(elementwise[informative].mean())
+        if not group_losses:
+            return elementwise.sum() * 0.0
+        return torch.stack(group_losses).mean()
+    return elementwise.mean()
 
 
 def headwise_bce_loss(prediction, target, visibility_weight, semantic_weight):
@@ -127,6 +159,9 @@ def train_model(x, target, cfg, device, seed):
         input_dim=int(cfg["input_dim"]), hidden_size=int(cfg["hidden_size"]),
         hidden_layers=int(cfg["hidden_layers"]), output_dim=int(cfg["output_dim"]),
         threshold=float(cfg["threshold"]), gate_slope=float(cfg["gate_slope"]),
+        yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
+        include_alignment_features=bool(cfg.get("include_alignment_features", False)),
+        output_temperature=float(cfg.get("output_temperature", 1.0)),
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     output_dir = Path(cfg["output_dir"])
@@ -196,9 +231,47 @@ def load_training_rows(cfg, root):
             p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
             features.append([float(row[k]) for k in ("x", "y", "yaw")])
             # Last two values are training-only masks for the physical class.
-            targets.append([visible, 1.0 - p_ripe, p_ripe,
+            targets.append([visible, max(0.5, 1.0 - p_ripe), max(0.5, p_ripe),
                             float(class_id == 0), float(class_id == 1)])
     return np.asarray(features, dtype=np.float32), np.asarray(targets, dtype=np.float32), sources
+
+
+def select_model_targets(target, cfg):
+    """Keep the loss target layout consistent for every model width.
+
+    Scalar conditional models use their physical-class mask in column 0 and
+    selected accuracy in column 1. Wider models retain the shared structured
+    target layout.
+    """
+    output_dim = int(cfg.get("output_dim", 3))
+    if output_dim == 4:
+        rows = []
+        for visible, accuracy_raw, accuracy_ripe, is_raw, is_ripe in target:
+            # Invisible samples are deliberately uninformative without a
+            # dedicated no-detection class.
+            raw_row = [0.5, 0.5] if visible < 0.5 else [
+                accuracy_raw, 1.0 - accuracy_raw
+            ]
+            ripe_row = [0.5, 0.5] if visible < 0.5 else [
+                1.0 - accuracy_ripe, accuracy_ripe
+            ]
+            rows.append([*raw_row, *ripe_row])
+        return np.asarray(rows, dtype=np.float32)
+    if output_dim == 1:
+        label = str(cfg.get("single_output_label", "accuracy_raw"))
+        target_columns = {
+            "visibility": 0,
+            "accuracy_raw": 1,
+            "accuracy_ripe": 2,
+        }
+        if label not in target_columns:
+            raise ValueError("unsupported scalar output label '{}'".format(label))
+        if label == "visibility":
+            class_mask = np.ones(len(target), dtype=target.dtype)
+        else:
+            class_mask = target[:, 3 if label == "accuracy_raw" else 4]
+        return np.column_stack([class_mask, target[:, target_columns[label]]])
+    return target[:, :3]
 
 
 def main(config_path):
@@ -209,17 +282,27 @@ def main(config_path):
     device = resolve_device(str(root.get("device", "auto")))
     x, target, sources = load_training_rows(cfg, root)
     original_count = len(x)
-    model_target = target[:, :3]
-    x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
-                              float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
+    output_dim = int(cfg.get("output_dim", 3))
+    model_target = select_model_targets(target, cfg)
+    #x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
+    #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
     masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
     target = np.column_stack([model_target, masks])
+    if output_dim == 4:
+        informative_weight = float(cfg.get("informative_loss_weight", 1.0))
+        likelihood = model_target.reshape(-1, 2, 2)
+        semantic_strength = np.max(likelihood, axis=2)
+        row_weights = 1.0 + (informative_weight - 1.0) * semantic_strength
+        target = np.column_stack([target, row_weights.astype(np.float32)])
     checkpoint, loss, final_train_loss, final_validation_loss = train_model(
         x, target, cfg, device, seed
     )
     output_labels = ["visibility", "accuracy_raw", "accuracy_ripe"]
-    output_dim = int(cfg.get("output_dim", 3))
-    if output_dim == 2:
+    if output_dim == 4:
+        output_labels = [
+            "raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe",
+        ]
+    elif output_dim == 2:
         output_labels = ["accuracy_raw", "accuracy_ripe"]
     elif output_dim == 1:
         output_labels = [cfg.get("single_output_label", "accuracy_raw")]
@@ -227,6 +310,12 @@ def main(config_path):
         "created_at": datetime.now(timezone.utc).isoformat(), "sources": sources,
         "device": str(device), "seed": seed,
         "min_detections_for_visibility": int(cfg.get("min_detections_for_visibility", 5)),
+        "hidden_size": int(cfg["hidden_size"]),
+        "hidden_layers": int(cfg["hidden_layers"]),
+        "yaw_harmonics": int(cfg.get("yaw_harmonics", 1)),
+        "include_alignment_features": bool(cfg.get("include_alignment_features", False)),
+        "output_temperature": float(cfg.get("output_temperature", 1.0)),
+        "informative_loss_weight": float(cfg.get("informative_loss_weight", 1.0)),
         "output_labels": output_labels,
         "checkpoint": checkpoint, "best_validation_loss": loss,
         "final_train_loss": final_train_loss,
