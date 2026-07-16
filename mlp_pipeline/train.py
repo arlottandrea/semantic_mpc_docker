@@ -286,7 +286,13 @@ def main(config_path):
     model_target = select_model_targets(target, cfg)
     #x, model_target = augment(x, model_target, float(cfg["augment_fraction"]),
     #                          float(cfg["augment_distance_margin"]), np.random.default_rng(seed))
-    masks = np.concatenate([target[:, 3:5], np.zeros((len(x) - original_count, 2), dtype=np.float32)])
+    masks = target[:, 3:5]
+    if output_dim == 4:
+        # A binary model has no no-detection outcome.  Invisible samples must
+        # therefore be excluded from the semantic cross-entropy instead of
+        # overwhelming the visible views with neutral [0.5, 0.5] targets.
+        masks = masks * target[:, 0:1]
+    masks = np.concatenate([masks, np.zeros((len(x) - original_count, 2), dtype=np.float32)])
     target = np.column_stack([model_target, masks])
     if output_dim == 4:
         informative_weight = float(cfg.get("informative_loss_weight", 1.0))

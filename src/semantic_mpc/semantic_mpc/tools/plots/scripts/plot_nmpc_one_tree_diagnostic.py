@@ -868,7 +868,10 @@ def build_interactive_heatmap_payload(data, dataset_points, grid_size, radius, y
                 "raw": np.round(outputs[:, 0], 4).tolist(),
                 "ripe": np.round(outputs[:, 3], 4).tolist(),
                 "entropy": np.round(
-                    expected_entropy_from_mlp_outputs(outputs, data["beliefs"][-1]),
+                    # Use a uniform diagnostic prior.  Using the converged
+                    # final belief makes entropy almost zero everywhere and
+                    # hides the sensor model's spatial information structure.
+                    expected_entropy_from_mlp_outputs(outputs, np.asarray([0.5, 0.5])),
                     4,
                 ).tolist(),
             }
@@ -925,7 +928,7 @@ input[type="range"] { width: 420px; max-width: 55vw; }
 <div class="panels">
   <div class="panel"><h3>P(obs=raw | true=raw)</h3><canvas id="rawPanel" width="520" height="520"></canvas></div>
   <div class="panel"><h3>P(obs=ripe | true=ripe)</h3><canvas id="ripePanel" width="520" height="520"></canvas></div>
-  <div class="panel"><h3>Expected posterior entropy [bits]</h3><canvas id="entropyPanel" width="520" height="520"></canvas></div>
+  <div class="panel"><h3>Expected posterior entropy [bits], prior=[0.5, 0.5]</h3><canvas id="entropyPanel" width="520" height="520"></canvas></div>
 </div>
 <div class="legend">
 Dataset points are filtered to the selected MLP relative-yaw slice. Orange = raw dataset, green = ripe dataset.
