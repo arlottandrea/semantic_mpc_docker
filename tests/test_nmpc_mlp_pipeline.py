@@ -64,6 +64,9 @@ def test_class_conditioned_model_uses_one_network_for_both_rows():
     assert output.shape == (1, 4)
     assert torch.allclose(output.reshape(1, 2, 2).sum(dim=-1), torch.ones(1, 2), atol=1e-6)
     assert runtime.conditioned_model is conditioned
+    rows = output.reshape(1, 2, 2)
+    assert rows[0, 0, 0] >= 0.5
+    assert rows[0, 1, 1] >= 0.5
 
 
 def test_class_conditioned_targets_follow_raw_zero_ripe_one_encoding():

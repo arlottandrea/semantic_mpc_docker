@@ -203,7 +203,9 @@ class ClassConditionedMLP(torch.nn.Module):
             ResidualBlock(hidden_size, expansion=2) for _ in range(hidden_layers)
         ])
         self.norm = torch.nn.LayerNorm(hidden_size)
-        self.out_layer = torch.nn.Linear(hidden_size, 2)
+        # One reliability logit is enough: the requested class determines
+        # which observation column is the diagonal/correct outcome.
+        self.out_layer = torch.nn.Linear(hidden_size, 1)
         self.register_buffer("threshold", torch.tensor(float(threshold)))
         self.register_buffer("gate_slope", torch.tensor(float(gate_slope)))
         self.register_buffer("yaw_threshold", torch.tensor(float(yaw_threshold_deg) * torch.pi / 180.0))
@@ -229,7 +231,13 @@ class ClassConditionedMLP(torch.nn.Module):
         h = self.input_layer(self.encode(x))
         for block in self.blocks:
             h = block(h)
-        learned = torch.softmax(self.out_layer(self.norm(h)) / self.output_temperature, dim=-1)
+        accuracy = 0.5 + 0.5 * torch.sigmoid(
+            self.out_layer(self.norm(h)) / self.output_temperature
+        )
+        true_class = x[..., 3:4]
+        raw_row = torch.cat([accuracy, 1.0 - accuracy], dim=-1)
+        ripe_row = torch.cat([1.0 - accuracy, accuracy], dim=-1)
+        learned = (1.0 - true_class) * raw_row + true_class * ripe_row
         distance = pose[..., :2].norm(dim=-1)
         range_gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
         yaw_gate = torch.sigmoid(

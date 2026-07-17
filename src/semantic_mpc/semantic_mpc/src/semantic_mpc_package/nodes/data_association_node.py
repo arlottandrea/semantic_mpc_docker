@@ -56,6 +56,8 @@ def load_params():
         "score_steepness": float(rospy.get_param("~score_steepness", 10.0)),
         "minimum_detection_score": float(rospy.get_param("~minimum_detection_score", 0.0)),
         "minimum_tree_detections": int(rospy.get_param("~minimum_tree_detections", 5)),
+        "evidence_count_midpoint": float(rospy.get_param("~evidence_count_midpoint", 7.0)),
+        "evidence_count_steepness": float(rospy.get_param("~evidence_count_steepness", 0.8)),
         "ripe_class_id": int(rospy.get_param("~ripe_class_id", 2)),
         "raw_class_label": rospy.get_param("~raw_class_label", "raw"),
         "ripe_class_label": rospy.get_param("~ripe_class_label", "ripe"),
@@ -264,6 +266,8 @@ class DataAssociationNode:
             len(self.tree_poses),
             minimum_score=self.params["minimum_detection_score"],
             minimum_tree_detections=self.params["minimum_tree_detections"],
+            evidence_count_midpoint=self.params.get("evidence_count_midpoint"),
+            evidence_count_steepness=self.params.get("evidence_count_steepness", 1.0),
         )
         if drone_x is None:
             scores_with_neg[:] = np.nan

@@ -124,7 +124,11 @@ def trained_mlp_sensor(
             h = ca_layer_norm(h + residual, state[prefix + "norm.weight"], state[prefix + "norm.bias"])
         h = ca_layer_norm(h, state["norm.weight"], state["norm.bias"])
         logits = ca_linear(h, state["out_layer.weight"], state["out_layer.bias"])
-        learned = ca_softmax_rows(logits / max(float(output_temperature), 1e-3))
+        accuracy = 0.5 + 0.5 / (
+            1.0 + ca.exp(-logits / max(float(output_temperature), 1e-3))
+        )
+        learned = (ca.horzcat(accuracy, 1.0 - accuracy) if true_class < 0.5
+                   else ca.horzcat(1.0 - accuracy, accuracy))
         distance = ca.sqrt(pose_xy[:, 0] ** 2 + pose_xy[:, 1] ** 2 + 1e-6)
         threshold = float(np.asarray(state.get("threshold", 5.0)).reshape(-1)[0])
         gate_slope = float(np.asarray(state.get("gate_slope", 10.0)).reshape(-1)[0])
