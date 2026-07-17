@@ -143,8 +143,8 @@ def diagnostic_params(horizon):
     params.update(
         {
             "model_device": "gpu",
-            "num_target_trees": 1,
-            "num_obstacle_trees": 1,
+            "num_target_trees": 5,
+            "num_obstacle_trees": 5,
             "active_target_count": 1,
             "active_obstacle_count": 1,
             "dt": 0.25,
