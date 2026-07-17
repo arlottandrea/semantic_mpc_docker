@@ -196,6 +196,21 @@ function line(a,color){c.strokeStyle=color;c.lineWidth=3;c.beginPath();a.forEach
         lines.append("| {variant} | {parameters} | {validation_loss_mean:.6f} | {casadi_inference_mean_us:.1f} | {optimizer_mean_ms:.1f} | {entropy_reduction:.3f} | {tracked_trees} | {min_tree_distance:.3f} |".format(**r))
     (output_root / "REPORT.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    heatmaps = [
+        {"variant": record["variant"],
+         "path": str(Path(record["heatmap_interactive"]).relative_to(output_root)).replace("\\", "/")}
+        for record in records
+    ]
+    (output_root / "heatmaps_interactive.html").write_text("""<!doctype html><html><head><meta charset='utf-8'>
+<title>Interactive MLP heatmap comparison</title><style>html,body{height:100%%;margin:0;font:14px system-ui;background:#111;color:#eee}
+header{height:54px;box-sizing:border-box;padding:10px 18px;background:#20242a;display:flex;align-items:center;gap:14px}
+select{padding:7px 12px;font-size:14px}iframe{display:block;border:0;width:100%%;height:calc(100%% - 54px);background:#fff}</style></head>
+<body><header><strong>Dual-MLP interactive heatmaps</strong><label>Architecture <select id='variant'></select></label>
+<span>The embedded heatmap retains its relative-yaw slider.</span></header><iframe id='heatmap'></iframe>
+<script>const maps=%s,select=document.querySelector('#variant'),frame=document.querySelector('#heatmap');
+maps.forEach(m=>select.add(new Option(m.variant,m.path)));function load(){frame.src=select.value}select.onchange=load;load();</script></body></html>"""
+        % json.dumps(heatmaps), encoding="utf-8")
+
 
 def main():
     parser = argparse.ArgumentParser()
