@@ -230,6 +230,8 @@ def load_training_rows(cfg, root):
                 raw_scores,
                 minimum_score=float(cfg.get("minimum_detection_score", 0.0)),
                 minimum_tree_detections=minimum,
+                evidence_count_midpoint=cfg.get("evidence_count_midpoint"),
+                evidence_count_steepness=float(cfg.get("evidence_count_steepness", 1.0)),
             )
             visible = float(np.all(np.isfinite(observation)))
             p_ripe = float(observation[0]) if visible else 0.5

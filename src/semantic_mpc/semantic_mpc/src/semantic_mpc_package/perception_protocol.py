@@ -16,6 +16,8 @@ def tree_observation_scores(
     raw_scores,
     minimum_score=0.0,
     minimum_tree_detections=5,
+    evidence_count_midpoint=None,
+    evidence_count_steepness=1.0,
 ):
     """Return tree-level evidence ``[ripe, raw]`` from fruit detections.
 
@@ -41,7 +43,18 @@ def tree_observation_scores(
     total = float(mass.sum())
     if total <= 0.0:
         return INVALID_SCORE_ROW.copy()
-    return mass / total
+    observation = mass / total
+    if evidence_count_midpoint is not None:
+        # A barely valid handful of fruits is weak tree-level evidence. Blend
+        # it toward neutral and approach the detector distribution smoothly as
+        # the associated fruit count grows. This is shared by CSV generation,
+        # training and the realtime ROS node.
+        count = len(ripe) + len(raw)
+        strength = 0.5 + 0.5 * np.tanh(
+            float(evidence_count_steepness) * (count - float(evidence_count_midpoint))
+        )
+        observation = 0.5 + strength * (observation - 0.5)
+    return observation
 
 
 def categorical_tree_scores(
@@ -49,6 +62,8 @@ def categorical_tree_scores(
     tree_count,
     minimum_score=0.0,
     minimum_tree_detections=5,
+    evidence_count_midpoint=None,
+    evidence_count_steepness=1.0,
 ):
     """Aggregate associated detections into categorical ripe/raw score rows."""
     scores = np.full((int(tree_count), 2), np.nan, dtype=float)
@@ -60,5 +75,7 @@ def categorical_tree_scores(
             fruits.get("raw", []),
             minimum_score=minimum_score,
             minimum_tree_detections=minimum_tree_detections,
+            evidence_count_midpoint=evidence_count_midpoint,
+            evidence_count_steepness=evidence_count_steepness,
         )
     return scores
