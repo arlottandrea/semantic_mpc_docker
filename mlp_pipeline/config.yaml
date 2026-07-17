@@ -16,14 +16,14 @@ dataset:
   iou_threshold: 0.7
   ripe_class: Ripe_Apple
   raw_class: Raw_Apple
-  score_midpoint: 6
+  score_midpoint: 4.75
   score_steepness: 14.0
-  evidence_count_midpoint: 6
-  evidence_count_steepness: 1.2
-  minimum_detection_score: 0.0
-  evidence_count_midpoint: 6
-  evidence_count_steepness: 1.2
-  minimum_tree_detections: 5
+  evidence_count_midpoint: 4.75
+  evidence_count_steepness: 2.05
+  minimum_detection_score: 0.62
+  evidence_count_midpoint: 4.75
+  evidence_count_steepness: 2.05
+  minimum_tree_detections: 6
   save_annotations: true
 
 training:
@@ -54,8 +54,8 @@ training:
   epochs: 20
   learning_rate: 0.0001
   # An isolated fruit is not considered an observation of the whole tree.
-  min_detections_for_visibility: 5
-  minimum_detection_score: 0.0
+  min_detections_for_visibility: 6
+  minimum_detection_score: 0.62
   visibility_loss_weight: 1.0
   semantic_loss_weight: 1.0
   augment_fraction: 0.2
