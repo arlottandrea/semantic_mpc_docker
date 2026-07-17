@@ -183,6 +183,8 @@ def load_model(cfg, checkpoint):
         yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
         include_alignment_features=bool(cfg.get("include_alignment_features", False)),
         output_temperature=float(cfg.get("output_temperature", 1.0)),
+        yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
+        yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
     )
     model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
     return model.eval()

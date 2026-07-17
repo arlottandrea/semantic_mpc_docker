@@ -85,10 +85,8 @@ def encode_pose_casadi(features, yaw_harmonics=4, include_alignment_features=Tru
         distance = ca.sqrt(features[:, 0] ** 2 + features[:, 1] ** 2 + 1e-6)
         direction_x = -features[:, 0] / distance
         direction_y = -features[:, 1] / distance
-        heading_x = ca.cos(yaw)
-        heading_y = ca.sin(yaw)
-        facing = heading_x * direction_x + heading_y * direction_y
-        lateral = heading_x * direction_y - heading_y * direction_x
+        facing = ca.cos(yaw)
+        lateral = ca.sin(yaw)
         encoded.extend([distance, direction_x, direction_y, facing, lateral])
     return ca.horzcat(*encoded)
 
@@ -140,7 +138,13 @@ def trained_mlp_sensor(
     distance = ca.sqrt(pose_xy[:, 0] ** 2 + pose_xy[:, 1] ** 2 + 1e-6)
     threshold = float(np.asarray(state.get("threshold", 5.0)).reshape(-1)[0])
     gate_slope = float(np.asarray(state.get("gate_slope", 10.0)).reshape(-1)[0])
-    gate = 1.0 / (1.0 + ca.exp(-gate_slope * (threshold - distance)))
+    range_gate = 1.0 / (1.0 + ca.exp(-gate_slope * (threshold - distance)))
+    yaw_threshold = float(np.asarray(state.get("yaw_threshold", np.deg2rad(30.0))).reshape(-1)[0])
+    yaw_gate_slope = float(np.asarray(state.get("yaw_gate_slope", 50.0)).reshape(-1)[0])
+    yaw_gate = 1.0 / (
+        1.0 + ca.exp(-yaw_gate_slope * (ca.cos(features[:, 2]) - np.cos(yaw_threshold)))
+    )
+    gate = range_gate * yaw_gate
     gate_col = ca.reshape(gate, int(batch_size), 1)
     raw = gate_col * learned_raw + (1.0 - gate_col) * 0.5
     ripe = gate_col * learned_ripe + (1.0 - gate_col) * 0.5

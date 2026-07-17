@@ -79,6 +79,8 @@ class MultiLayerPerceptron(torch.nn.Module):
         yaw_harmonics=1,
         include_alignment_features=False,
         output_temperature=1.0,
+        yaw_threshold_deg=30.0,
+        yaw_gate_slope=50.0,
     ):
         super().__init__()
         if output_dim != 4:
@@ -99,6 +101,8 @@ class MultiLayerPerceptron(torch.nn.Module):
         self.out_layer = torch.nn.Linear(hidden_size, output_dim)
         self.register_buffer("threshold", torch.tensor(float(threshold)))
         self.register_buffer("gate_slope", torch.tensor(float(gate_slope)))
+        self.register_buffer("yaw_threshold", torch.tensor(float(yaw_threshold_deg) * torch.pi / 180.0))
+        self.register_buffer("yaw_gate_slope", torch.tensor(float(yaw_gate_slope)))
 
     def encode_pose(self, x):
         if x.shape[-1] != 3:
@@ -113,17 +117,16 @@ class MultiLayerPerceptron(torch.nn.Module):
         if self.include_alignment_features:
             distance = xy.norm(dim=-1, keepdim=True).clamp_min(1e-6)
             direction_to_tree = -xy / distance
-            heading = torch.cat([torch.cos(yaw), torch.sin(yaw)], dim=-1)
-            facing = (heading * direction_to_tree).sum(dim=-1, keepdim=True)
-            lateral = (
-                heading[..., :1] * direction_to_tree[..., 1:2]
-                - heading[..., 1:2] * direction_to_tree[..., :1]
-            )
+            # The third input is already heading error relative to the tree:
+            # zero means facing it.  Do not rotate it against direction again.
+            facing = torch.cos(yaw)
+            lateral = torch.sin(yaw)
             encoded.extend([distance, direction_to_tree, facing, lateral])
         return torch.cat(encoded, dim=-1)
 
     def forward(self, x):
         pose_xy = x[..., :2]
+        raw_input_yaw = x[..., -1]
         x = self.encode_pose(x)
 
         h = self.input_layer(x)
@@ -134,12 +137,15 @@ class MultiLayerPerceptron(torch.nn.Module):
 
         # Outside the observation range both rows become uninformative.
         distance = pose_xy.norm(dim=-1)
-        gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
+        range_gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
         learned = torch.softmax(
             logits.reshape(*logits.shape[:-1], 2, 2) / self.output_temperature,
             dim=-1,
         )
-        gate = gate[..., None, None]
+        yaw_gate = torch.sigmoid(
+            self.yaw_gate_slope * (torch.cos(raw_input_yaw) - torch.cos(self.yaw_threshold))
+        )
+        gate = (range_gate * yaw_gate)[..., None, None]
         neutral = torch.full_like(learned, 0.5)
         likelihood = gate * learned + (1.0 - gate) * neutral
         return likelihood.flatten(start_dim=-2)

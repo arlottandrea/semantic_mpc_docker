@@ -19,6 +19,8 @@ training:
   yaw_harmonics: 4
   include_alignment_features: true
   output_temperature: 0.4
+  yaw_threshold_deg: 30.0
+  yaw_gate_slope: 50.0
   informative_loss_weight: 6.0
   threshold: 5.0
   gate_slope: 10.0

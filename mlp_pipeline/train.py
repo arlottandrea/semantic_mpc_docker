@@ -164,6 +164,8 @@ def train_model(x, target, cfg, device, seed):
         yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
         include_alignment_features=bool(cfg.get("include_alignment_features", False)),
         output_temperature=float(cfg.get("output_temperature", 1.0)),
+        yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
+        yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     output_dir = Path(cfg["output_dir"])
@@ -323,6 +325,8 @@ def main(config_path):
         "yaw_harmonics": int(cfg.get("yaw_harmonics", 1)),
         "include_alignment_features": bool(cfg.get("include_alignment_features", False)),
         "output_temperature": float(cfg.get("output_temperature", 1.0)),
+        "yaw_threshold_deg": float(cfg.get("yaw_threshold_deg", 30.0)),
+        "yaw_gate_slope": float(cfg.get("yaw_gate_slope", 50.0)),
         "informative_loss_weight": float(cfg.get("informative_loss_weight", 1.0)),
         "output_labels": output_labels,
         "checkpoint": checkpoint, "best_validation_loss": loss,
