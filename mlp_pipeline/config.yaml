@@ -16,12 +16,12 @@ dataset:
   iou_threshold: 0.7
   ripe_class: Ripe_Apple
   raw_class: Raw_Apple
-  score_midpoint: 7
+  score_midpoint: 6
   score_steepness: 14.0
-  evidence_count_midpoint: 7
+  evidence_count_midpoint: 6
   evidence_count_steepness: 1.2
   minimum_detection_score: 0.0
-  evidence_count_midpoint: 7
+  evidence_count_midpoint: 6
   evidence_count_steepness: 1.2
   minimum_tree_detections: 5
   save_annotations: true

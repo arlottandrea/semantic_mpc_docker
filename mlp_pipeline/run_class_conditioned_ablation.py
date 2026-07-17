@@ -33,7 +33,7 @@ def config_for(directory, variant, epochs):
       output_dir=str(directory),replace_existing_checkpoints=True,input_dim=4,output_dim=2,loss_function="headwise_bce",
       include_alignment_features=True,output_temperature=.3,yaw_threshold_deg=30.,yaw_gate_slope=70.,threshold=5.,gate_slope=14.,
       validation_split=.35,batch_size=64,epochs=epochs,learning_rate=.0001,min_detections_for_visibility=5,minimum_detection_score=0.,
-      evidence_count_midpoint=7,evidence_count_steepness=1.2,visibility_loss_weight=1.,semantic_loss_weight=1.,augment_fraction=0.,augment_distance_margin=5.,num_workers=0)
+      evidence_count_midpoint=6,evidence_count_steepness=1.2,visibility_loss_weight=1.,semantic_loss_weight=1.,augment_fraction=0.,augment_distance_margin=5.,num_workers=0)
     training.update(variant); return {"seed":42,"device":"cpu","training":training}
 
 def checkpoint(directory):
@@ -85,7 +85,7 @@ def reports(root, records):
                   "`python -m mlp_pipeline.plot_class_conditioned_ablation_fit --ablation-dir {}`".format(root),
                   "", "## Fixed assumptions and implementation constraints", "",
                   "- All variants use seed 42, CPU training, the same raw/ripe CSV files, split (35%), batch size (64), and learning rate (1e-4).",
-                  "- The reliability target uses a 30 deg yaw gate, temperature 0.4, minimum visibility count 5, and evidence-count calibration midpoint 7 / steepness 0.8.",
+                  "- The reliability target uses a 30 deg yaw gate, temperature 0.3, minimum visibility count 5, and evidence-count calibration midpoint 6 / steepness 1.2.",
                   "- The NMPC comparison fixes information-gain and entropy-pressure weights to 20 and attraction to 0.2.",
                   "- OpenMP and MKL are forced to one thread for reproducible timing; `KMP_DUPLICATE_LIB_OK` is enabled as a Windows runtime workaround.",
                   "- Dataset-fit subprocesses have a 20 s teardown timeout; an already flushed plot is accepted if the Windows OpenMP process hangs during shutdown."])

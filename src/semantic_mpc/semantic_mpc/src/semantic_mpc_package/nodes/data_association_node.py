@@ -56,7 +56,7 @@ def load_params():
         "score_steepness": float(rospy.get_param("~score_steepness", 10.0)),
         "minimum_detection_score": float(rospy.get_param("~minimum_detection_score", 0.0)),
         "minimum_tree_detections": int(rospy.get_param("~minimum_tree_detections", 5)),
-        "evidence_count_midpoint": float(rospy.get_param("~evidence_count_midpoint", 7.0)),
+        "evidence_count_midpoint": float(rospy.get_param("~evidence_count_midpoint", 6.0)),
         "evidence_count_steepness": float(rospy.get_param("~evidence_count_steepness", 0.8)),
         "ripe_class_id": int(rospy.get_param("~ripe_class_id", 2)),
         "raw_class_label": rospy.get_param("~raw_class_label", "raw"),
