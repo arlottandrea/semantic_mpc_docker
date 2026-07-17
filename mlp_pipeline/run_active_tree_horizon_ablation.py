@@ -58,10 +58,14 @@ def reports(root,records,active_values,horizons):
             for j in range(len(horizons)):
                 value=matrix[i,j];ax.text(j,i,"{:.1f}".format(value) if np.isfinite(value) else "TIMEOUT",ha="center",va="center",color="white",fontsize=8)
     fig.savefig(root/"active_tree_horizon_ablation.png",dpi=180);plt.close(fig)
-    payload=json.dumps({"active":active_values,"horizons":horizons,"metrics":{k:v.tolist() for k,v in matrices.items()}})
-    (root/"active_tree_horizon_ablation_interactive.html").write_text("""<!doctype html><meta charset='utf-8'><title>NMPC scaling ablation</title><style>body{font:14px system-ui;margin:25px;background:#111;color:#eee}select{padding:6px}canvas{background:#fff;margin-top:15px}</style><h1>Active-tree × horizon ablation</h1><select id=m></select><br><canvas id=c width=900 height=600></canvas><script>const p=%s,keys=Object.keys(p.metrics),x=c.getContext('2d');keys.forEach(k=>m.add(new Option(k,k)));function color(t){return `rgb(${Math.round(30+220*t)},${Math.round(80+150*t)},${Math.round(180-140*t)})`}function draw(){let a=p.metrics[m.value],flat=a.flat().filter(Number.isFinite),lo=Math.min(...flat),hi=Math.max(...flat);x.clearRect(0,0,c.width,c.height);a.forEach((row,i)=>row.forEach((v,j)=>{let px=130+j*170,py=60+i*100;x.fillStyle=Number.isFinite(v)?color((v-lo)/(hi-lo||1)):'#777';x.fillRect(px,py,155,85);x.fillStyle='#111';x.fillText(Number.isFinite(v)?v.toFixed(2):'TIMEOUT',px+40,py+45)}));x.fillStyle='#111';p.horizons.forEach((v,j)=>x.fillText('H='+v,180+j*170,35));p.active.forEach((v,i)=>x.fillText('trees='+v,35,108+i*100))}m.onchange=draw;draw();</script>"""%payload,encoding="utf-8")
     lines=["# Active-tree × horizon NMPC ablation","","| Active trees | Horizon | Batch | Status | Mean ms | P95 ms | Entropy reduction | Tracked | Min distance |","|---:|---:|---:|:---|---:|---:|---:|---:|---:|"]
     for r in records:lines.append("| {active_trees} | {horizon} | {batch_size} | {status} | {solve_mean_ms:.2f} | {solve_p95_ms:.2f} | {entropy_reduction:.3f} | {tracked_trees} | {min_tree_distance:.3f} |".format(**r))
+    lines.extend(["", "## Benchmark assumptions and limits", "",
+                  "- Each scene contains exactly the requested number of active trees; inactive trees are not retained in the symbolic graph.",
+                  "- IPOPT is capped by `ipopt_max_iter` and `ipopt_max_cpu_time` for each solve.",
+                  "- A whole diagnostic case is marked `timeout` after `case_timeout`; timeout cells are not numeric measurements.",
+                  "- Information-gain and entropy-pressure weights are fixed to 20, while attraction is fixed to 0.2.",
+                  "- Short runs can show zero entropy reduction when the vehicle does not reach an informative pose."])
     (root/"REPORT.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
 
 def main():

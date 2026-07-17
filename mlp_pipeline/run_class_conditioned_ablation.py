@@ -82,10 +82,22 @@ def reports(root, records):
     lines=["# Class-conditioned MLP architecture ablation","","| Variant | Params | Val loss | CasADi us | NMPC ms | Entropy reduction | Tracked |", "|---|---:|---:|---:|---:|---:|---:|"]
     for r in records:lines.append("| {variant} | {parameters} | {validation_loss:.6f} | {casadi_mean_us:.1f} | {optimizer_mean_ms:.1f} | {entropy_reduction:.3f} | {tracked_trees} |".format(**r))
     lines.extend(["", "Generate the row-wise dataset/model comparison with:", "",
-                  "`python -m mlp_pipeline.plot_class_conditioned_ablation_fit --ablation-dir {}`".format(root)])
+                  "`python -m mlp_pipeline.plot_class_conditioned_ablation_fit --ablation-dir {}`".format(root),
+                  "", "## Fixed assumptions and implementation constraints", "",
+                  "- All variants use seed 42, CPU training, the same raw/ripe CSV files, split (35%), batch size (64), and learning rate (1e-4).",
+                  "- The reliability target uses a 30 deg yaw gate, temperature 0.4, minimum visibility count 5, and evidence-count calibration midpoint 7 / steepness 0.8.",
+                  "- The NMPC comparison fixes information-gain and entropy-pressure weights to 20 and attraction to 0.2.",
+                  "- OpenMP and MKL are forced to one thread for reproducible timing; `KMP_DUPLICATE_LIB_OK` is enabled as a Windows runtime workaround.",
+                  "- Dataset-fit subprocesses have a 20 s teardown timeout; an already flushed plot is accepted if the Windows OpenMP process hangs during shutdown."])
     (root/"REPORT.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
-    maps=[{"variant":r["variant"],"path":str(Path(r["heatmap_interactive"]).relative_to(root)).replace("\\","/")} for r in records]
-    (root/"heatmaps_interactive.html").write_text("""<!doctype html><meta charset='utf-8'><title>Class-conditioned heatmaps</title><style>body{margin:0;background:#111;color:#eee;font:14px system-ui}header{position:sticky;top:0;z-index:9;background:#222;padding:14px}input{width:55vw}.m{margin:14px;background:#222}.m h2{padding:10px;margin:0}.m iframe{border:0;width:100%%;height:650px;background:#fff}</style><header><b>All class-conditioned heatmaps</b> &nbsp; Global yaw <input id=s type=range min=0 max=18 value=9><b id=v>0 deg</b></header><main id=r></main><script>const maps=%s;maps.forEach(m=>r.innerHTML+=`<section class=m><h2>${m.variant}</h2><iframe src="${m.path}"></iframe></section>`);function sync(){v.textContent=(-180+20*s.value)+' deg';document.querySelectorAll('iframe').forEach(f=>{try{let q=f.contentDocument.querySelector('#yawSlider');if(q){q.value=s.value;q.dispatchEvent(new Event('input'));f.contentDocument.querySelector('.controls').style.display='none'}}catch(e){}})}s.oninput=sync;document.querySelectorAll('iframe').forEach(f=>f.onload=sync);</script>"""%json.dumps(maps),encoding="utf-8")
+    maps=[]
+    for record in records:
+        source=Path(record["heatmap_interactive"])
+        maps.append({"variant":record["variant"],"html":source.read_text(encoding="utf-8")})
+    (root/"heatmaps_interactive.html").write_text("""<!doctype html><meta charset='utf-8'><title>Class-conditioned heatmaps</title><style>body{margin:0;background:#111;color:#eee;font:14px system-ui}header{position:sticky;top:0;z-index:9;background:#222;padding:14px}input{width:55vw}.m{margin:14px;background:#222}.m h2{padding:10px;margin:0}.m iframe{border:0;width:100%%;height:650px;background:#fff}</style><header><b>All class-conditioned heatmaps</b> &nbsp; Global yaw <input id=s type=range min=0 max=18 value=9><b id=v>0 deg</b></header><main id=r></main><script>const maps=%s;maps.forEach(m=>{const section=document.createElement('section'),title=document.createElement('h2'),frame=document.createElement('iframe');section.className='m';title.textContent=m.variant;frame.srcdoc=m.html;frame.onload=sync;section.append(title,frame);r.append(section)});function sync(){v.textContent=(-180+20*s.value)+' deg';document.querySelectorAll('iframe').forEach(f=>{try{let q=f.contentDocument.querySelector('#yawSlider');if(q){q.value=s.value;q.dispatchEvent(new Event('input'));let controls=f.contentDocument.querySelector('.controls');if(controls)controls.style.display='none'}}catch(e){}})}s.oninput=sync;sync();</script>"""%json.dumps(maps),encoding="utf-8")
+    # The aggregate is standalone; keep one user-facing interactive artifact.
+    for record in records:
+        Path(record["heatmap_interactive"]).unlink(missing_ok=True)
 
 def main():
     p=argparse.ArgumentParser();p.add_argument("--output-dir",default=str(ROOT/"outputs/class_conditioned_ablation"));p.add_argument("--epochs",type=int,default=40);p.add_argument("--tree-count",type=int,default=5);p.add_argument("--iterations",type=int,default=60);p.add_argument("--horizon",type=int,default=5);p.add_argument("--variants",nargs="*",choices=VARIANTS,default=list(VARIANTS));a=p.parse_args();root=Path(a.output_dir);root.mkdir(parents=True,exist_ok=True);records=[]
