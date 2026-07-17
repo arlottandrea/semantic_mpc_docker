@@ -93,13 +93,28 @@ def encode_pose_casadi(features, yaw_harmonics=4, include_alignment_features=Tru
 
 def trained_mlp_sensor(
     batch_size,
-    checkpoint_path,
+    raw_checkpoint_path,
     weights_cache_path=None,
+    ripe_checkpoint_path=None,
+    ripe_weights_cache_path=None,
     output_temperature=0.4,
     yaw_harmonics=4,
     include_alignment_features=True,
 ):
-    state = load_trained_weights(checkpoint_path, weights_cache_path)
+    raw_checkpoint_path = Path(raw_checkpoint_path)
+    if ripe_checkpoint_path is None:
+        parts = list(raw_checkpoint_path.parts)
+        try:
+            parts[len(parts) - 1 - parts[::-1].index("raw")] = "ripe"
+        except ValueError as exc:
+            raise ValueError("ripe_checkpoint_path is required unless raw checkpoint is under a raw/ directory") from exc
+        ripe_dir = Path(*parts).parent
+        candidates = sorted(ripe_dir.glob("best_model_epoch_*.pth"))
+        if not candidates:
+            raise FileNotFoundError("no ripe scalar checkpoint found in {}".format(ripe_dir))
+        ripe_checkpoint_path = candidates[-1]
+    raw_state = load_trained_weights(raw_checkpoint_path, weights_cache_path)
+    ripe_state = load_trained_weights(ripe_checkpoint_path, ripe_weights_cache_path)
     features = ca.MX.sym("trained_mlp_features", int(batch_size), 3)
     pose_xy = features[:, 0:2]
     x = encode_pose_casadi(
@@ -107,49 +122,36 @@ def trained_mlp_sensor(
         yaw_harmonics=yaw_harmonics,
         include_alignment_features=include_alignment_features,
     )
-    h = ca_linear(x, state["input_layer.weight"], state["input_layer.bias"])
-    block_count = len(
-        {
-            key.split(".")[1]
-            for key in state
-            if key.startswith("blocks.") and key.endswith(".fc1.weight")
-        }
-    )
-    for block_idx in range(block_count):
-        prefix = "blocks.{}.".format(block_idx)
-        residual = ca_linear(h, state[prefix + "fc1.weight"], state[prefix + "fc1.bias"])
-        residual = ca_gelu(residual)
-        residual = ca_linear(
-            residual,
-            state[prefix + "fc2.weight"],
-            state[prefix + "fc2.bias"],
+    def scalar_accuracy(state):
+        h = ca_linear(x, state["input_layer.weight"], state["input_layer.bias"])
+        block_count = len(
+            {key.split(".")[1] for key in state
+             if key.startswith("blocks.") and key.endswith(".fc1.weight")}
         )
-        h = ca_layer_norm(
-            h + residual,
-            state[prefix + "norm.weight"],
-            state[prefix + "norm.bias"],
-        )
-    h = ca_layer_norm(h, state["norm.weight"], state["norm.bias"])
-    logits = ca_linear(h, state["out_layer.weight"], state["out_layer.bias"])
+        for block_idx in range(block_count):
+            prefix = "blocks.{}.".format(block_idx)
+            residual = ca_linear(h, state[prefix + "fc1.weight"], state[prefix + "fc1.bias"])
+            residual = ca_gelu(residual)
+            residual = ca_linear(residual, state[prefix + "fc2.weight"], state[prefix + "fc2.bias"])
+            h = ca_layer_norm(h + residual, state[prefix + "norm.weight"], state[prefix + "norm.bias"])
+        h = ca_layer_norm(h, state["norm.weight"], state["norm.bias"])
+        logits = ca_linear(h, state["out_layer.weight"], state["out_layer.bias"])
+        learned = 0.5 + 0.5 / (1.0 + ca.exp(-logits / max(float(output_temperature), 1e-3)))
+        distance = ca.sqrt(pose_xy[:, 0] ** 2 + pose_xy[:, 1] ** 2 + 1e-6)
+        threshold = float(np.asarray(state.get("threshold", 5.0)).reshape(-1)[0])
+        gate_slope = float(np.asarray(state.get("gate_slope", 10.0)).reshape(-1)[0])
+        range_gate = 1.0 / (1.0 + ca.exp(-gate_slope * (threshold - distance)))
+        yaw_threshold = float(np.asarray(state.get("yaw_threshold", np.deg2rad(30.0))).reshape(-1)[0])
+        yaw_gate_slope = float(np.asarray(state.get("yaw_gate_slope", 50.0)).reshape(-1)[0])
+        yaw_gate = 1.0 / (1.0 + ca.exp(-yaw_gate_slope * (ca.cos(features[:, 2]) - np.cos(yaw_threshold))))
+        gate = ca.reshape(range_gate * yaw_gate, int(batch_size), 1)
+        return gate * learned + (1.0 - gate) * 0.5
 
-    temperature = max(float(output_temperature), 1e-3)
-    learned_raw = ca_softmax_rows(logits[:, 0:2] / temperature)
-    learned_ripe = ca_softmax_rows(logits[:, 2:4] / temperature)
-    distance = ca.sqrt(pose_xy[:, 0] ** 2 + pose_xy[:, 1] ** 2 + 1e-6)
-    threshold = float(np.asarray(state.get("threshold", 5.0)).reshape(-1)[0])
-    gate_slope = float(np.asarray(state.get("gate_slope", 10.0)).reshape(-1)[0])
-    range_gate = 1.0 / (1.0 + ca.exp(-gate_slope * (threshold - distance)))
-    yaw_threshold = float(np.asarray(state.get("yaw_threshold", np.deg2rad(30.0))).reshape(-1)[0])
-    yaw_gate_slope = float(np.asarray(state.get("yaw_gate_slope", 50.0)).reshape(-1)[0])
-    yaw_gate = 1.0 / (
-        1.0 + ca.exp(-yaw_gate_slope * (ca.cos(features[:, 2]) - np.cos(yaw_threshold)))
-    )
-    gate = range_gate * yaw_gate
-    gate_col = ca.reshape(gate, int(batch_size), 1)
-    raw = gate_col * learned_raw + (1.0 - gate_col) * 0.5
-    ripe = gate_col * learned_ripe + (1.0 - gate_col) * 0.5
+    raw_accuracy = scalar_accuracy(raw_state)
+    ripe_accuracy = scalar_accuracy(ripe_state)
     return ca.Function(
         "trained_mlp_sensor_{}".format(int(batch_size)),
         [features],
-        [ca.horzcat(raw, ripe)],
+        [ca.horzcat(raw_accuracy, 1.0 - raw_accuracy,
+                    1.0 - ripe_accuracy, ripe_accuracy)],
     )

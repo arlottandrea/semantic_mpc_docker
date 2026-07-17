@@ -53,7 +53,7 @@ from semantic_mpc_package.casadi_mlp_sensor import trained_mlp_sensor
 
 
 DEFAULT_CHECKPOINT = (
-    ROOT / "models" / "nmpc" / "fog" / "yaw_enriched" / "5m" / "best_model_epoch_39.pth"
+    ROOT / "models" / "nmpc" / "fog" / "dual_mlp" / "5m" / "raw" / "best_model_epoch_38.pth"
 )
 
 
@@ -760,7 +760,7 @@ def plot_mlp_heatmap(path, data, grid_size=121, radius=6.0, dataset_points=None)
     ripe_correct = outputs[:, 3].reshape(grid_size, grid_size)
     expected_entropy = expected_entropy_from_mlp_outputs(
         outputs,
-        data["beliefs"][-1],
+        np.asarray([0.5, 0.5]),
     ).reshape(grid_size, grid_size)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
@@ -768,7 +768,7 @@ def plot_mlp_heatmap(path, data, grid_size=121, radius=6.0, dataset_points=None)
     panels = [
         (raw_correct, "P(obs=raw | true=raw)", "viridis", 0.0, 1.0),
         (ripe_correct, "P(obs=ripe | true=ripe)", "viridis", 0.0, 1.0),
-        (expected_entropy, "Expected posterior entropy [bits]", "magma", 0.0, 1.0),
+        (expected_entropy, "Expected posterior entropy [bits], prior=[0.5, 0.5]", "magma", 0.0, 1.0),
     ]
     for ax, (values, title, cmap, vmin, vmax) in zip(axes, panels):
         image = ax.imshow(

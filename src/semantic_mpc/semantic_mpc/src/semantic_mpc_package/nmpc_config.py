@@ -14,18 +14,20 @@ def _as_bool(value):
 
 def default_nmpc_params():
     return {
-        "hidden_size": 128,
-        "hidden_layers": 4,
+        "hidden_size": 32,
+        "hidden_layers": 2,
         "nn_input_dim": 3,
-        "nn_output_dim": 4,
-        "nn_yaw_harmonics": 4,
+        "nn_output_dim": 1,
+        "nn_yaw_harmonics": 2,
         "nn_include_alignment_features": True,
         "nn_output_temperature": 0.4,
         "nn_threshold": 5.0,
         "nn_gate_slope": 10.0,
         "model_device": "cuda",
-        "nn_model_dir": "/models/nmpc/fog/yaw_enriched/5m",
-        "nn_model_path": "",
+        "nn_model_dir_raw": "/models/nmpc/fog/dual_mlp/5m/raw",
+        "nn_model_dir_ripe": "/models/nmpc/fog/dual_mlp/5m/ripe",
+        "nn_model_path_raw": "",
+        "nn_model_path_ripe": "",
         "nn_output_labels": [
             "raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe",
         ],

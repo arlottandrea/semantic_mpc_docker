@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 from mlp_pipeline.common import weighted_detection_score
 from mlp_pipeline.train import augment, resolve_loss_function
 from mlp_pipeline.visualize import prepare_inference_targets
-from semantic_mpc_package.perception_model import MultiLayerPerceptron
+from semantic_mpc_package.perception_model import DualReliabilityMLP, MultiLayerPerceptron
 
 
 def test_shared_model_returns_structured_probabilities():
@@ -35,6 +35,24 @@ def test_relative_yaw_gate_is_uninformative_at_ninety_degrees():
     )
     rows = output.reshape(1, 2, 2)
     assert torch.allclose(rows, torch.full((1, 2, 2), 0.5), atol=1e-5)
+
+
+def test_dual_scalar_models_form_normalized_likelihood():
+    raw = MultiLayerPerceptron(hidden_size=8, hidden_layers=1, output_dim=1)
+    ripe = MultiLayerPerceptron(hidden_size=8, hidden_layers=1, output_dim=1)
+    output = DualReliabilityMLP(raw, ripe)(torch.tensor([[2.0, 0.0, 0.0]]))
+    rows = output.reshape(1, 2, 2)
+    assert output.shape == (1, 4)
+    assert torch.allclose(rows.sum(dim=-1), torch.ones(1, 2), atol=1e-6)
+    assert torch.all(rows[:, 0, 0] >= 0.5)
+    assert torch.all(rows[:, 1, 1] >= 0.5)
+
+
+def test_dual_scalar_models_are_neutral_outside_yaw_support():
+    raw = MultiLayerPerceptron(hidden_size=8, hidden_layers=1, output_dim=1)
+    ripe = MultiLayerPerceptron(hidden_size=8, hidden_layers=1, output_dim=1)
+    output = DualReliabilityMLP(raw, ripe)(torch.tensor([[2.0, 0.0, np.pi / 2.0]]))
+    assert torch.allclose(output, torch.full((1, 4), 0.5), atol=1e-5)
 
 
 def test_empty_detection_score_is_neutral_after_generator_offset():

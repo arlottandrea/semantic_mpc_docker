@@ -51,18 +51,22 @@ def _is_compatible_checkpoint(path, params):
     return True
 
 
-def get_latest_best_model(params):
-    explicit_model = params.get("nn_model_path")
+def get_latest_best_model(params, label=None):
+    compatibility_params = dict(params)
+    if label:
+        compatibility_params["nn_output_labels"] = ["accuracy_{}".format(label)]
+    suffix = "_{}".format(label) if label else ""
+    explicit_model = params.get("nn_model_path{}".format(suffix), params.get("nn_model_path"))
     if explicit_model not in (None, "", []):
         model_path = os.path.expandvars(os.path.expanduser(str(explicit_model)))
         if not os.path.isfile(model_path):
             raise FileNotFoundError("Configured nn_model_path does not exist: {}".format(model_path))
-        if not _is_compatible_checkpoint(model_path, params):
+        if not _is_compatible_checkpoint(model_path, compatibility_params):
             raise ValueError("Configured nn_model_path is not compatible: {}".format(model_path))
         rospy.loginfo("Loading configured NMPC model: %s", model_path)
         return model_path
 
-    configured_dir = params.get("nn_model_dir")
+    configured_dir = params.get("nn_model_dir{}".format(suffix), params.get("nn_model_dir"))
     model_dir = os.path.expandvars(os.path.expanduser(str(configured_dir))) if configured_dir else None
     if not model_dir:
         model_dir = os.environ.get(
@@ -74,7 +78,7 @@ def get_latest_best_model(params):
         for filename in filenames:
             if re.match(r"best_model_epoch_(\d+)\.pth", filename):
                 path = os.path.join(root, filename)
-                if _is_compatible_checkpoint(path, params):
+                if _is_compatible_checkpoint(path, compatibility_params):
                     model_files.append(path)
     if not model_files:
         raise FileNotFoundError("No compatible model files found in {}".format(model_dir))
@@ -88,19 +92,22 @@ def load_l4casadi_model(params):
     import l4casadi as l4c
     import torch
 
-    from semantic_mpc_package.perception_model import MultiLayerPerceptron
+    from semantic_mpc_package.perception_model import DualReliabilityMLP, MultiLayerPerceptron
 
     torch.jit.set_fusion_strategy([("STATIC", 0)])
-    model = MultiLayerPerceptron(
+    def make_scalar():
+        return MultiLayerPerceptron(
         input_dim=int(params["nn_input_dim"]), hidden_size=int(params["hidden_size"]),
-        hidden_layers=int(params["hidden_layers"]), output_dim=int(params["nn_output_dim"]),
+        hidden_layers=int(params["hidden_layers"]), output_dim=1,
         threshold=float(params["nn_threshold"]), gate_slope=float(params["nn_gate_slope"]),
         yaw_harmonics=int(params.get("nn_yaw_harmonics", 1)),
         include_alignment_features=bool(params.get("nn_include_alignment_features", False)),
         output_temperature=float(params.get("nn_output_temperature", 1.0)),
     )
-    model.load_state_dict(torch.load(
-        get_latest_best_model(params), map_location=torch.device(params["model_device"])
-    ))
+    raw_model, ripe_model = make_scalar(), make_scalar()
+    device = torch.device(params["model_device"])
+    raw_model.load_state_dict(torch.load(get_latest_best_model(params, "raw"), map_location=device))
+    ripe_model.load_state_dict(torch.load(get_latest_best_model(params, "ripe"), map_location=device))
+    model = DualReliabilityMLP(raw_model, ripe_model)
     model.eval()
     return l4c.L4CasADi(model, batched=True, device=params["model_device"], name="perception")

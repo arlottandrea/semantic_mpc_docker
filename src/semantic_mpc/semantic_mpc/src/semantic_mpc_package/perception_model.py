@@ -83,8 +83,9 @@ class MultiLayerPerceptron(torch.nn.Module):
         yaw_gate_slope=50.0,
     ):
         super().__init__()
-        if output_dim != 4:
-            raise ValueError("binary conditional observation model requires four outputs")
+        if output_dim not in (1, 4):
+            raise ValueError("conditional observation model requires one or four outputs")
+        self.output_dim = int(output_dim)
         self.input_dim = int(input_dim)
         self.yaw_harmonics = max(1, int(yaw_harmonics))
         self.include_alignment_features = bool(include_alignment_features)
@@ -138,14 +139,42 @@ class MultiLayerPerceptron(torch.nn.Module):
         # Outside the observation range both rows become uninformative.
         distance = pose_xy.norm(dim=-1)
         range_gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
-        learned = torch.softmax(
-            logits.reshape(*logits.shape[:-1], 2, 2) / self.output_temperature,
-            dim=-1,
-        )
+        if self.output_dim == 1:
+            # A scalar network learns only its physical-class accuracy.
+            learned = 0.5 + 0.5 * torch.sigmoid(logits / self.output_temperature)
+        else:
+            learned = torch.softmax(
+                logits.reshape(*logits.shape[:-1], 2, 2) / self.output_temperature,
+                dim=-1,
+            )
         yaw_gate = torch.sigmoid(
             self.yaw_gate_slope * (torch.cos(raw_input_yaw) - torch.cos(self.yaw_threshold))
         )
-        gate = (range_gate * yaw_gate)[..., None, None]
+        gate_shape = (..., None) if self.output_dim == 1 else (..., None, None)
+        gate = (range_gate * yaw_gate)[gate_shape]
         neutral = torch.full_like(learned, 0.5)
         likelihood = gate * learned + (1.0 - gate) * neutral
+        if self.output_dim == 1:
+            return likelihood
         return likelihood.flatten(start_dim=-2)
+
+
+class DualReliabilityMLP(torch.nn.Module):
+    """Two independent scalar MLPs assembled into a binary likelihood.
+
+    ``raw_model`` learns P(obs=raw|true=raw), while ``ripe_model`` learns
+    P(obs=ripe|true=ripe). Complements are derived, never learned outputs.
+    """
+
+    def __init__(self, raw_model, ripe_model):
+        super().__init__()
+        self.raw_model = raw_model
+        self.ripe_model = ripe_model
+
+    def forward(self, x):
+        raw_accuracy = self.raw_model(x)
+        ripe_accuracy = self.ripe_model(x)
+        return torch.cat(
+            [raw_accuracy, 1.0 - raw_accuracy, 1.0 - ripe_accuracy, ripe_accuracy],
+            dim=-1,
+        )
