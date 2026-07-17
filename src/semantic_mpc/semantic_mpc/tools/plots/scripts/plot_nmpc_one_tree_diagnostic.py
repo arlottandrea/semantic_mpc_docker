@@ -766,8 +766,8 @@ def plot_mlp_heatmap(path, data, grid_size=121, radius=6.0, dataset_points=None)
     fig, axes = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
     extent = [xs[0], xs[-1], ys[0], ys[-1]]
     panels = [
-        (raw_correct, "P(obs=raw | true=raw)", "viridis", 0.0, 1.0),
-        (ripe_correct, "P(obs=ripe | true=ripe)", "viridis", 0.0, 1.0),
+        (raw_correct, "P(obs=raw | true=raw)", "viridis", 0.5, 1.0),
+        (ripe_correct, "P(obs=ripe | true=ripe)", "viridis", 0.5, 1.0),
         (expected_entropy, "Expected posterior entropy [bits], prior=[0.5, 0.5]", "magma", 0.0, 1.0),
     ]
     for ax, (values, title, cmap, vmin, vmax) in zip(axes, panels):
