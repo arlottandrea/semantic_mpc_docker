@@ -166,6 +166,9 @@ def train_model(x, target, cfg, device, seed):
         output_temperature=float(cfg.get("output_temperature", 1.0)),
         yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
         yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
+        architecture=str(cfg.get("architecture", "resnet")),
+        ode_steps=int(cfg.get("ode_steps", 3)),
+        ode_dt=float(cfg.get("ode_dt", 0.25)),
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     output_dir = Path(cfg["output_dir"])
@@ -178,6 +181,7 @@ def train_model(x, target, cfg, device, seed):
     loss_fn = resolve_loss_function(cfg)
     weights = (float(cfg.get("visibility_loss_weight", 1.0)),
                float(cfg.get("semantic_loss_weight", 1.0)))
+    history = []
     for epoch in range(1, int(cfg["epochs"]) + 1):
         model.train()
         train_total = 0.0
@@ -197,6 +201,7 @@ def train_model(x, target, cfg, device, seed):
         train_loss = train_total / len(train_set)
         validation_loss = validation_total / len(validation_set)
         writer.add_scalars("loss", {"train": train_loss, "validation": validation_loss}, epoch)
+        history.append((epoch, train_loss, validation_loss, float(optimizer.param_groups[0]["lr"])))
         print("epoch {}/{} train={:.6f} validation={:.6f}".format(
             epoch, cfg["epochs"], train_loss, validation_loss))
         if validation_loss < best_loss:
@@ -206,6 +211,8 @@ def train_model(x, target, cfg, device, seed):
             best_path = output_dir / "best_model_epoch_{}.pth".format(epoch)
             torch.save(model.state_dict(), str(best_path))
     writer.close()
+    with (output_dir / "training_history.csv").open("w", newline="", encoding="utf-8") as stream:
+        csv.writer(stream).writerows([["epoch", "train_loss", "validation_loss", "learning_rate"], *history])
     return str(best_path), best_loss, train_loss, validation_loss
 
 
@@ -327,6 +334,9 @@ def main(config_path):
         "output_temperature": float(cfg.get("output_temperature", 1.0)),
         "yaw_threshold_deg": float(cfg.get("yaw_threshold_deg", 30.0)),
         "yaw_gate_slope": float(cfg.get("yaw_gate_slope", 50.0)),
+        "architecture": str(cfg.get("architecture", "resnet")),
+        "ode_steps": int(cfg.get("ode_steps", 3)),
+        "ode_dt": float(cfg.get("ode_dt", 0.25)),
         "informative_loss_weight": float(cfg.get("informative_loss_weight", 1.0)),
         "output_labels": output_labels,
         "checkpoint": checkpoint, "best_validation_loss": loss,

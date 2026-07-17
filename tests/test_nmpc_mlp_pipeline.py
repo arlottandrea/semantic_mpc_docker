@@ -55,6 +55,19 @@ def test_dual_scalar_models_are_neutral_outside_yaw_support():
     assert torch.allclose(output, torch.full((1, 4), 0.5), atol=1e-5)
 
 
+def test_all_ablation_backbones_return_scalar_reliability():
+    pose = torch.tensor([[2.0, -1.0, 0.1], [2.0, -1.0, np.pi / 2.0]])
+    for architecture in ("simple", "resnet", "neural_ode", "enhanced"):
+        model = MultiLayerPerceptron(
+            hidden_size=8, hidden_layers=2, output_dim=1,
+            architecture=architecture, ode_steps=2,
+        )
+        output = model(pose)
+        assert output.shape == (2, 1)
+        assert torch.all((output >= 0.5) & (output <= 1.0))
+        assert torch.allclose(output[1], torch.tensor([0.5]), atol=1e-5)
+
+
 def test_empty_detection_score_is_neutral_after_generator_offset():
     centered_score = weighted_detection_score([], midpoint=5, steepness=10.0)
     assert centered_score + 0.5 == 0.5

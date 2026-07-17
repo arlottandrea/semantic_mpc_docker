@@ -59,6 +59,50 @@ class ResidualBlock(torch.nn.Module):
         return self.norm(x + h)
 
 
+class SimpleBlock(torch.nn.Module):
+    """Plain affine/GELU layer used by the small and large baselines."""
+
+    def __init__(self, dim, dropout=0.0):
+        super().__init__()
+        self.linear = torch.nn.Linear(dim, dim)
+        self.dropout = torch.nn.Dropout(dropout) if dropout > 0.0 else torch.nn.Identity()
+
+    def forward(self, x):
+        return self.dropout(F.gelu(self.linear(x)))
+
+
+class NeuralODEBlock(torch.nn.Module):
+    """Fixed-step Euler neural ODE block, deliberately CasADi-friendly."""
+
+    def __init__(self, dim, steps=3, dt=0.25):
+        super().__init__()
+        self.fc1 = torch.nn.Linear(dim, dim)
+        self.fc2 = torch.nn.Linear(dim, dim)
+        self.steps = int(steps)
+        self.dt = float(dt)
+
+    def forward(self, x):
+        for _ in range(self.steps):
+            x = x + self.dt * self.fc2(torch.tanh(self.fc1(x)))
+        return x
+
+
+class GatedResidualBlock(torch.nn.Module):
+    """Residual block with a learned sigmoid gate and smooth SiLU features."""
+
+    def __init__(self, dim, expansion=2, dropout=0.0):
+        super().__init__()
+        self.fc1 = torch.nn.Linear(dim, dim * expansion)
+        self.fc2 = torch.nn.Linear(dim * expansion, dim)
+        self.gate = torch.nn.Linear(dim, dim)
+        self.dropout = torch.nn.Dropout(dropout) if dropout > 0.0 else torch.nn.Identity()
+        self.norm = torch.nn.LayerNorm(dim)
+
+    def forward(self, x):
+        update = self.dropout(self.fc2(F.silu(self.fc1(x))))
+        return self.norm(x + torch.sigmoid(self.gate(x)) * update)
+
+
 class MultiLayerPerceptron(torch.nn.Module):
     """Pose-dependent 2x2 conditional sensor likelihood.
 
@@ -81,6 +125,9 @@ class MultiLayerPerceptron(torch.nn.Module):
         output_temperature=1.0,
         yaw_threshold_deg=30.0,
         yaw_gate_slope=50.0,
+        architecture="resnet",
+        ode_steps=3,
+        ode_dt=0.25,
     ):
         super().__init__()
         if output_dim not in (1, 4):
@@ -90,6 +137,10 @@ class MultiLayerPerceptron(torch.nn.Module):
         self.yaw_harmonics = max(1, int(yaw_harmonics))
         self.include_alignment_features = bool(include_alignment_features)
         self.output_temperature = max(float(output_temperature), 1e-3)
+        architecture_ids = {"simple": 0, "resnet": 1, "neural_ode": 2, "enhanced": 3}
+        if architecture not in architecture_ids:
+            raise ValueError("unsupported architecture '{}'".format(architecture))
+        self.architecture = architecture
         if self.input_dim == 3:
             in_features = 2 + 2 * self.yaw_harmonics
             if self.include_alignment_features:
@@ -97,13 +148,23 @@ class MultiLayerPerceptron(torch.nn.Module):
         else:
             in_features = self.input_dim
         self.input_layer = torch.nn.Linear(in_features, hidden_size)
-        self.blocks = torch.nn.ModuleList([ResidualBlock(hidden_size, expansion=2, dropout=dropout) for _ in range(hidden_layers)])
+        block_factory = {
+            "simple": lambda: SimpleBlock(hidden_size, dropout=dropout),
+            "resnet": lambda: ResidualBlock(hidden_size, expansion=2, dropout=dropout),
+            "neural_ode": lambda: NeuralODEBlock(hidden_size, steps=ode_steps, dt=ode_dt),
+            "enhanced": lambda: GatedResidualBlock(hidden_size, expansion=2, dropout=dropout),
+        }[architecture]
+        self.blocks = torch.nn.ModuleList([block_factory() for _ in range(hidden_layers)])
         self.norm = torch.nn.LayerNorm(hidden_size)
         self.out_layer = torch.nn.Linear(hidden_size, output_dim)
         self.register_buffer("threshold", torch.tensor(float(threshold)))
         self.register_buffer("gate_slope", torch.tensor(float(gate_slope)))
         self.register_buffer("yaw_threshold", torch.tensor(float(yaw_threshold_deg) * torch.pi / 180.0))
         self.register_buffer("yaw_gate_slope", torch.tensor(float(yaw_gate_slope)))
+        self.register_buffer("architecture_id", torch.tensor(architecture_ids[architecture]))
+        self.register_buffer("yaw_harmonics_buffer", torch.tensor(self.yaw_harmonics))
+        self.register_buffer("ode_steps", torch.tensor(int(ode_steps)))
+        self.register_buffer("ode_dt", torch.tensor(float(ode_dt)))
 
     def encode_pose(self, x):
         if x.shape[-1] != 3:
