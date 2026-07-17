@@ -17,12 +17,12 @@ dataset:
   ripe_class: Ripe_Apple
   raw_class: Raw_Apple
   score_midpoint: 7
-  score_steepness: 10.0
+  score_steepness: 14.0
   evidence_count_midpoint: 7
-  evidence_count_steepness: 0.8
+  evidence_count_steepness: 1.2
   minimum_detection_score: 0.0
   evidence_count_midpoint: 7
-  evidence_count_steepness: 0.8
+  evidence_count_steepness: 1.2
   minimum_tree_detections: 5
   save_annotations: true
 
@@ -42,13 +42,13 @@ training:
   hidden_layers: 4
   yaw_harmonics: 4
   include_alignment_features: true
-  output_temperature: 0.4
+  output_temperature: 0.3
   yaw_threshold_deg: 30.0
-  yaw_gate_slope: 50.0
+  yaw_gate_slope: 70.0
   informative_loss_weight: 6.0
   # Must match NMPC observation_range and nn_threshold.
   threshold: 5.0
-  gate_slope: 10.0
+  gate_slope: 14.0
   validation_split: 0.35
   batch_size: 32
   epochs: 20

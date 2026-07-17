@@ -31,9 +31,9 @@ def run(command):
 def config_for(directory, variant, epochs):
     training=dict(model_type="class_conditioned",input_csvs={"raw":r"C:\ros1\datasets\fog\5m\raw\TreeDatasetCNN.csv","ripe":r"C:\ros1\datasets\fog\5m\ripe\TreeDatasetCNN.csv"},
       output_dir=str(directory),replace_existing_checkpoints=True,input_dim=4,output_dim=2,loss_function="headwise_bce",
-      include_alignment_features=True,output_temperature=.4,yaw_threshold_deg=30.,yaw_gate_slope=50.,threshold=5.,gate_slope=10.,
+      include_alignment_features=True,output_temperature=.3,yaw_threshold_deg=30.,yaw_gate_slope=70.,threshold=5.,gate_slope=14.,
       validation_split=.35,batch_size=64,epochs=epochs,learning_rate=.0001,min_detections_for_visibility=5,minimum_detection_score=0.,
-      evidence_count_midpoint=7,evidence_count_steepness=.8,visibility_loss_weight=1.,semantic_loss_weight=1.,augment_fraction=0.,augment_distance_margin=5.,num_workers=0)
+      evidence_count_midpoint=7,evidence_count_steepness=1.2,visibility_loss_weight=1.,semantic_loss_weight=1.,augment_fraction=0.,augment_distance_margin=5.,num_workers=0)
     training.update(variant); return {"seed":42,"device":"cpu","training":training}
 
 def checkpoint(directory):
