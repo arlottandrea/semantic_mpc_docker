@@ -84,6 +84,19 @@ def test_class_conditioned_model_is_neutral_at_ninety_degrees():
     assert torch.allclose(model(inputs), torch.full((2, 2), 0.5), atol=1e-5)
 
 
+def test_class_conditioned_ablation_backbones_preserve_probability_contract():
+    inputs = torch.tensor([[2.0, -1.0, 0.1, 0.0], [2.0, -1.0, 0.1, 1.0]])
+    for architecture in ("simple", "resnet", "neural_ode", "enhanced"):
+        model = ClassConditionedMLP(
+            hidden_size=8, hidden_layers=2, architecture=architecture, ode_steps=2,
+        )
+        rows = model(inputs)
+        assert rows.shape == (2, 2)
+        assert torch.allclose(rows.sum(dim=-1), torch.ones(2), atol=1e-6)
+        assert rows[0, 0] >= 0.5
+        assert rows[1, 1] >= 0.5
+
+
 def test_empty_detection_score_is_neutral_after_generator_offset():
     centered_score = weighted_detection_score([], midpoint=5, steepness=10.0)
     assert centered_score + 0.5 == 0.5

@@ -59,6 +59,32 @@ class ResidualBlock(torch.nn.Module):
         return self.norm(x + h)
 
 
+class SimpleBlock(torch.nn.Module):
+    def __init__(self, dim):
+        super().__init__(); self.linear = torch.nn.Linear(dim, dim)
+    def forward(self, x):
+        return F.gelu(self.linear(x))
+
+
+class NeuralODEBlock(torch.nn.Module):
+    def __init__(self, dim, steps=3, dt=0.25):
+        super().__init__(); self.fc1 = torch.nn.Linear(dim, dim); self.fc2 = torch.nn.Linear(dim, dim)
+        self.steps, self.dt = int(steps), float(dt)
+    def forward(self, x):
+        for _ in range(self.steps):
+            x = x + self.dt * self.fc2(torch.tanh(self.fc1(x)))
+        return x
+
+
+class GatedResidualBlock(torch.nn.Module):
+    def __init__(self, dim, expansion=2):
+        super().__init__(); self.fc1 = torch.nn.Linear(dim, dim * expansion); self.fc2 = torch.nn.Linear(dim * expansion, dim)
+        self.gate = torch.nn.Linear(dim, dim); self.norm = torch.nn.LayerNorm(dim)
+    def forward(self, x):
+        update = self.fc2(F.silu(self.fc1(x)))
+        return self.norm(x + torch.sigmoid(self.gate(x)) * update)
+
+
 class MultiLayerPerceptron(torch.nn.Module):
     """Pose-dependent 2x2 conditional sensor likelihood.
 
@@ -190,7 +216,8 @@ class ClassConditionedMLP(torch.nn.Module):
     def __init__(self, hidden_size=32, hidden_layers=2, threshold=5.0,
                  gate_slope=10.0, yaw_harmonics=2,
                  include_alignment_features=True, output_temperature=0.4,
-                 yaw_threshold_deg=30.0, yaw_gate_slope=50.0):
+                 yaw_threshold_deg=30.0, yaw_gate_slope=50.0,
+                 architecture="resnet", ode_steps=3, ode_dt=0.25):
         super().__init__()
         self.yaw_harmonics = max(1, int(yaw_harmonics))
         self.include_alignment_features = bool(include_alignment_features)
@@ -199,9 +226,16 @@ class ClassConditionedMLP(torch.nn.Module):
         if self.include_alignment_features:
             pose_features += 5
         self.input_layer = torch.nn.Linear(pose_features + 1, hidden_size)
-        self.blocks = torch.nn.ModuleList([
-            ResidualBlock(hidden_size, expansion=2) for _ in range(hidden_layers)
-        ])
+        architecture_ids = {"simple": 0, "resnet": 1, "neural_ode": 2, "enhanced": 3}
+        if architecture not in architecture_ids:
+            raise ValueError("unsupported architecture '{}'".format(architecture))
+        factory = {
+            "simple": lambda: SimpleBlock(hidden_size),
+            "resnet": lambda: ResidualBlock(hidden_size, expansion=2),
+            "neural_ode": lambda: NeuralODEBlock(hidden_size, steps=ode_steps, dt=ode_dt),
+            "enhanced": lambda: GatedResidualBlock(hidden_size, expansion=2),
+        }[architecture]
+        self.blocks = torch.nn.ModuleList([factory() for _ in range(hidden_layers)])
         self.norm = torch.nn.LayerNorm(hidden_size)
         # One reliability logit is enough: the requested class determines
         # which observation column is the diagonal/correct outcome.
@@ -211,6 +245,9 @@ class ClassConditionedMLP(torch.nn.Module):
         self.register_buffer("yaw_threshold", torch.tensor(float(yaw_threshold_deg) * torch.pi / 180.0))
         self.register_buffer("yaw_gate_slope", torch.tensor(float(yaw_gate_slope)))
         self.register_buffer("yaw_harmonics_buffer", torch.tensor(self.yaw_harmonics))
+        self.register_buffer("architecture_id", torch.tensor(architecture_ids[architecture]))
+        self.register_buffer("ode_steps", torch.tensor(int(ode_steps)))
+        self.register_buffer("ode_dt", torch.tensor(float(ode_dt)))
 
     def encode(self, x):
         pose, true_class = x[..., :3], x[..., 3:4]

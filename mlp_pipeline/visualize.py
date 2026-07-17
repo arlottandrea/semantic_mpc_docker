@@ -187,6 +187,9 @@ def load_model(cfg, checkpoint):
             output_temperature=float(cfg.get("output_temperature", 1.0)),
             yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
             yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
+            architecture=str(cfg.get("architecture", "resnet")),
+            ode_steps=int(cfg.get("ode_steps", 3)),
+            ode_dt=float(cfg.get("ode_dt", 0.25)),
         )
         model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
         return model.eval()

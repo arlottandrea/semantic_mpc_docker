@@ -165,6 +165,9 @@ def train_model(x, target, cfg, device, seed):
         output_temperature=float(cfg.get("output_temperature", 1.0)),
         yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
         yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
+        architecture=str(cfg.get("architecture", "resnet")),
+        ode_steps=int(cfg.get("ode_steps", 3)),
+        ode_dt=float(cfg.get("ode_dt", 0.25)),
     )
     if cfg.get("model_type") == "class_conditioned":
         model = ClassConditionedMLP(**common_kwargs).to(device)
@@ -351,6 +354,9 @@ def main(config_path):
         "output_labels": output_labels,
         "model_type": str(cfg.get("model_type", "legacy")),
         "class_encoding": {"raw": 0, "ripe": 1} if cfg.get("model_type") == "class_conditioned" else None,
+        "architecture": str(cfg.get("architecture", "resnet")),
+        "ode_steps": int(cfg.get("ode_steps", 3)),
+        "ode_dt": float(cfg.get("ode_dt", 0.25)),
         "checkpoint": checkpoint, "best_validation_loss": loss,
         "final_train_loss": final_train_loss,
         "final_validation_loss": final_validation_loss,

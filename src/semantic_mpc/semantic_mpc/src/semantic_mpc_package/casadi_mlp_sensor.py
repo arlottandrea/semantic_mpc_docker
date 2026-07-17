@@ -113,15 +113,27 @@ def trained_mlp_sensor(
         x = ca.horzcat(pose_encoded, class_column)
         h = ca_linear(x, state["input_layer.weight"], state["input_layer.bias"])
         block_count = len(
-            {key.split(".")[1] for key in state
-             if key.startswith("blocks.") and key.endswith(".fc1.weight")}
+            {key.split(".")[1] for key in state if key.startswith("blocks.")}
         )
+        architecture_id = int(np.asarray(state.get("architecture_id", 1)).reshape(-1)[0])
         for block_idx in range(block_count):
             prefix = "blocks.{}.".format(block_idx)
-            residual = ca_linear(h, state[prefix + "fc1.weight"], state[prefix + "fc1.bias"])
-            residual = ca_gelu(residual)
-            residual = ca_linear(residual, state[prefix + "fc2.weight"], state[prefix + "fc2.bias"])
-            h = ca_layer_norm(h + residual, state[prefix + "norm.weight"], state[prefix + "norm.bias"])
+            if architecture_id == 0:
+                h = ca_gelu(ca_linear(h, state[prefix + "linear.weight"], state[prefix + "linear.bias"]))
+            elif architecture_id == 2:
+                steps = int(np.asarray(state.get("ode_steps", 3)).reshape(-1)[0])
+                dt = float(np.asarray(state.get("ode_dt", 0.25)).reshape(-1)[0])
+                for _ in range(steps):
+                    field = ca.tanh(ca_linear(h, state[prefix + "fc1.weight"], state[prefix + "fc1.bias"]))
+                    h = h + dt * ca_linear(field, state[prefix + "fc2.weight"], state[prefix + "fc2.bias"])
+            else:
+                residual = ca_linear(h, state[prefix + "fc1.weight"], state[prefix + "fc1.bias"])
+                residual = ca_gelu(residual) if architecture_id == 1 else residual / (1.0 + ca.exp(-residual))
+                residual = ca_linear(residual, state[prefix + "fc2.weight"], state[prefix + "fc2.bias"])
+                if architecture_id == 3:
+                    gate_value = ca_linear(h, state[prefix + "gate.weight"], state[prefix + "gate.bias"])
+                    residual = residual / (1.0 + ca.exp(-gate_value))
+                h = ca_layer_norm(h + residual, state[prefix + "norm.weight"], state[prefix + "norm.bias"])
         h = ca_layer_norm(h, state["norm.weight"], state["norm.bias"])
         logits = ca_linear(h, state["out_layer.weight"], state["out_layer.bias"])
         accuracy = 0.5 + 0.5 / (
