@@ -109,6 +109,8 @@ def main(config_path):
                 raw_scores,
                 minimum_score=float(cfg.get("minimum_detection_score", 0.0)),
                 minimum_tree_detections=int(cfg.get("minimum_tree_detections", 5)),
+                evidence_count_midpoint=cfg.get("evidence_count_midpoint", cfg.get("score_midpoint")),
+                evidence_count_steepness=float(cfg.get("evidence_count_steepness", cfg.get("score_steepness", 1.0))),
             )
             completed = dict(record)
             completed.update({

@@ -18,7 +18,11 @@ dataset:
   raw_class: Raw_Apple
   score_midpoint: 7
   score_steepness: 10.0
+  evidence_count_midpoint: 7
+  evidence_count_steepness: 0.8
   minimum_detection_score: 0.0
+  evidence_count_midpoint: 7
+  evidence_count_steepness: 0.8
   minimum_tree_detections: 5
   save_annotations: true
 
