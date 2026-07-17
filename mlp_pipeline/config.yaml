@@ -4,10 +4,10 @@ device: auto
 dataset:
   # Manifest columns: x,y,yaw,image_path. Relative image paths are resolved
   # against the manifest directory. Use "latest" to select the newest CSV.
-  input_manifest: /datasets/fog/5m/raw/TreeDatasetCNN.csv
+  input_manifest: 'C:\ros1\datasets\fog\5m\raw\TreeDatasetCNN.csv'
   # This may equal input_manifest: the completed CSV is replaced atomically.
-  output_csv: /datasets/fog/5m/raw/TreeDatasetCNN.csv
-  annotations_dir: /datasets/fog/5m/raw/detections
+  output_csv: 'C:\ros1\datasets\fog\5m\raw\TreeDatasetCNN.csv'
+  annotations_dir: 'C:\ros1\datasets\fog\5m\raw\detections'
   weights: /models/yolo/apples.pt
   yolo_source: /workspace/src/yolov7-ros/src
   image_size: 640
@@ -28,8 +28,8 @@ dataset:
 
 training:
   input_csvs:
-    raw: /datasets/fog/5m/raw/TreeDatasetCNN.csv
-    ripe: /datasets/fog/5m/ripe/TreeDatasetCNN.csv
+    raw: 'C:\ros1\datasets\fog\5m\raw\TreeDatasetCNN.csv'
+    ripe: 'C:\ros1\datasets\fog\5m\ripe\TreeDatasetCNN.csv'
   output_dir: /models/nmpc
   # Avoid a stale higher-epoch file being selected by the NMPC runtime.
   replace_existing_checkpoints: true
