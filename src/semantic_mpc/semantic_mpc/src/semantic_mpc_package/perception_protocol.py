@@ -30,7 +30,14 @@ def tree_observation_scores(
     raw = raw[np.isfinite(raw) & (raw >= float(minimum_score))]
     if len(ripe) + len(raw) < int(minimum_tree_detections):
         return INVALID_SCORE_ROW.copy()
-    mass = np.asarray([ripe.sum(), raw.sum()], dtype=float)
+    # Treat detector confidence as soft class evidence rather than discarding
+    # its complement.  Otherwise a view containing only detections labelled
+    # ripe would produce P(ripe)=1 regardless of whether confidences are 0.51
+    # or 0.99 (and symmetrically for raw).
+    mass = np.asarray(
+        [ripe.sum() + (1.0 - raw).sum(), raw.sum() + (1.0 - ripe).sum()],
+        dtype=float,
+    )
     total = float(mass.sum())
     if total <= 0.0:
         return INVALID_SCORE_ROW.copy()
