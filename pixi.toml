@@ -20,8 +20,9 @@ openpyxl = ">=3.1.5, <4"
 
 [tasks]
 build = "catkin_make -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-# This task configures the MSVC vars, sets CUDACXX, and runs pip install
-build-l4casadi = { cmd = "pip install l4casadi --no-build-isolation", env = { CUDACXX = "$PIXI_PROJECT_ROOT/.pixi/envs/default/Library/bin/nvcc.exe" } }
+# This task configures MSVC via Pixi activation, then builds the local
+# L4CasADi checkout against Pixi's CUDA/PyTorch environment.
+build-l4casadi = "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build_l4casadi.ps1"
 [dependencies]
 ros-noetic-desktop = ">=1.5.0,<2"
 compilers = ">=1.8.0,<2"
@@ -33,7 +34,6 @@ setuptools = ">=80.9.0,<81"
 scikit-build = ">=0.19.0,<0.20"
 cmake = ">=3.27.4,<4"
 casadi = ">=3.6.3,<4"
-vs2022_win-64 = ">=17"
 cuda-nvcc = ">=12.8.93,<13"
 cuda-runtime = ">=12.8.2,<13"
 cuda-version = "12.8.*"
@@ -48,3 +48,9 @@ ros-noetic-rosgraph-msgs = ">=1.11.3,<2"
 ros-noetic-cv-bridge = ">=1.16.0,<2"
 ros-noetic-message-generation = ">=0.4.1,<0.5"
 ros-noetic-image-geometry = ">=1.16.0,<2"
+wandb = ">=0.21.1,<0.22"
+pandas = ">=2.3.1,<3"
+matplotlib = ">=3.9.1,<4"
+seaborn = ">=0.13.2,<0.14"
+openpyxl = ">=3.1.5,<4"
+tensorboard = ">=2.11.2,<3"

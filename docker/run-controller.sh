@@ -21,11 +21,11 @@ if [[ "${controller}" == "rl" ]]; then
 fi
 
 if [[ "${controller}" == "nmpc" ]]; then
-  shopt -s nullglob
-  ripe=(/models/nmpc/ripe/best_model_epoch_*.pth)
-  raw=(/models/nmpc/raw/best_model_epoch_*.pth)
-  if (( ${#ripe[@]} == 0 || ${#raw[@]} == 0 )); then
-    echo "ERROR: NMPC requires both /models/nmpc/ripe/best_model_epoch_*.pth and /models/nmpc/raw/best_model_epoch_*.pth" >&2
+  shopt -s nullglob globstar
+  perception=(/models/nmpc/**/best_model_epoch_*.pth)
+  shopt -u nullglob globstar
+  if (( ${#perception[@]} == 0 )); then
+    echo "ERROR: NMPC requires /models/nmpc/**/best_model_epoch_*.pth" >&2
     exit 66
   fi
 

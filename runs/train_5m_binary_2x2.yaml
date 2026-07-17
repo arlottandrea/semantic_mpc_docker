@@ -1,0 +1,37 @@
+seed: 42
+device: cpu
+
+dataset:
+  score_midpoint: 5
+  score_steepness: 10.0
+
+training:
+  input_csvs:
+    raw: C:\ros1\datasets\fog\5m\raw\TreeDatasetCNN.csv
+    ripe: C:\ros1\datasets\fog\5m\ripe\TreeDatasetCNN.csv
+  output_dir: C:\ros1-2outputs\models\nmpc\fog\binary_2x2\5m
+  replace_existing_checkpoints: true
+  input_dim: 3
+  output_dim: 4
+  loss_function: structured
+  hidden_size: 128
+  hidden_layers: 4
+  yaw_harmonics: 4
+  include_alignment_features: true
+  output_temperature: 0.4
+  yaw_threshold_deg: 30.0
+  yaw_gate_slope: 50.0
+  informative_loss_weight: 6.0
+  threshold: 5.0
+  gate_slope: 10.0
+  validation_split: 0.35
+  batch_size: 64
+  epochs: 40
+  learning_rate: 0.0001
+  min_detections_for_visibility: 5
+  minimum_detection_score: 0.0
+  visibility_loss_weight: 1.0
+  semantic_loss_weight: 1.0
+  augment_fraction: 0.2
+  augment_distance_margin: 5.0
+  num_workers: 0

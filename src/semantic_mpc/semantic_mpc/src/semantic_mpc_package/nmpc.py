@@ -12,7 +12,7 @@ from visualization_msgs.msg import MarkerArray
 from semantic_mpc_package.experiment_metrics import WandbMetrics
 from semantic_mpc_package.baselines import resolve_mower_heading
 from semantic_mpc_package.nmpc_config import default_nmpc_params, load_semantic_mpc_params
-from semantic_mpc_package.nmpc_model import load_l4casadi_models
+from semantic_mpc_package.nmpc_model import load_l4casadi_model
 from semantic_mpc_package.nmpc_optimizer import NmpcOptimizer
 from semantic_mpc_package.ros_com_lib.sensors import (
     create_path_from_mpc_prediction,
@@ -29,7 +29,9 @@ from semantic_mpc_package.ros_experiment import (
 
 class NeuralMPC:
     def __init__(self, run_dir=None, initial_randomic=False, params=None, run_index=0):
-        rospy.init_node("nmpc_node", anonymous=True, log_level=rospy.INFO)
+        # A stable node name makes ROS shut down an older controller instance
+        # instead of allowing two anonymous nodes to publish competing poses.
+        rospy.init_node("nmpc_node", anonymous=False, log_level=rospy.INFO)
 
         self.params = default_nmpc_params()
         if params:
@@ -44,9 +46,16 @@ class NeuralMPC:
         )
         self._load_runtime_params()
         self._validate_comparability()
+        rospy.loginfo(
+            "NMPC configured with %d active target(s), %d obstacle(s), horizon %d",
+            self.num_target_trees,
+            self.num_obstacle_trees,
+            self.N,
+        )
         self.run_root = self.params["run_dir"]
 
-        self.l4c_nn = load_l4casadi_models(self.params)
+        self.l4c_nn = load_l4casadi_model(self.params)
+        self.nn_batch_size = self.N * self.num_target_trees
         self.optimizer = NmpcOptimizer(self.params, self.l4c_nn)
 
         self.ros = RosExperimentContext(self.params)
@@ -64,6 +73,8 @@ class NeuralMPC:
         self.num_total_trees = self.trees_pos.shape[0]
         self.entropy_entire_field = self.optimizer.entropy_f(self.num_total_trees)
         self.beliefs_k = ca.DM.ones(self.num_total_trees, 2) * 0.5
+        self._previous_measured_pose = None
+        self._estimated_velocity = np.zeros(3, dtype=float)
 
     def _load_runtime_params(self):
         self.N = int(self.params["mpc_horizon"])
@@ -90,22 +101,33 @@ class NeuralMPC:
         self.num_runs = int(self.params["num_runs"])
         self.run_index_offset = int(self.params["run_index_offset"])
         self.base_seed = int(self.params["seed"])
+        self.velocity_estimate_alpha = float(self.params["velocity_estimate_alpha"])
+        self.observation_decision_margin = float(self.params["observation_decision_margin"])
 
     def _validate_comparability(self):
         if self.num_target_trees != int(self.params["active_target_count"]):
-            raise ValueError("NMPC target count must equal the RL active_target_count")
+            raise ValueError("NMPC target count must equal active_target_count")
         if self.num_obstacle_trees != int(self.params["active_obstacle_count"]):
-            raise ValueError("NMPC obstacle count must equal the shared active_obstacle_count")
+            raise ValueError("NMPC obstacle count must equal active_obstacle_count")
         if self.num_target_trees < 1 or self.num_obstacle_trees < 1:
             raise ValueError("active target and obstacle counts must be positive")
         if not np.isclose(self.params["nn_threshold"], self.observation_range):
             raise ValueError("NMPC surrogate gate nn_threshold must equal observation_range")
-        if list(self.params["model_labels"]) != ["ripe", "raw"]:
-            raise ValueError("NMPC belief/model class order must be ['ripe', 'raw']")
+        expected_labels = [
+            "raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe",
+        ]
+        if list(self.params["nn_output_labels"]) != expected_labels:
+            raise ValueError("invalid conditional observation output order")
         if not 0.5 < self.belief_tracking_threshold < 1.0:
             raise ValueError("belief_tracking_threshold must be between 0.5 and 1.0")
         if self.belief_update_period != 1:
             raise ValueError("belief_update_period must be 1; new evidence is already sequence-gated")
+        if int(self.params["solver_failure_limit"]) < 1:
+            raise ValueError("solver_failure_limit must be positive")
+        if not 0.0 < self.velocity_estimate_alpha <= 1.0:
+            raise ValueError("velocity_estimate_alpha must be in (0, 1]")
+        if not 0.0 <= self.observation_decision_margin < 1.0:
+            raise ValueError("observation_decision_margin must be in [0, 1)")
         if not np.isclose(self.dt, self.params["measurement_period"]):
             raise ValueError("NMPC control and measurement periods must match the shared protocol")
 
@@ -114,6 +136,65 @@ class NeuralMPC:
         if pose is None:
             return None
         return pose.tolist()
+
+    def estimate_velocity(self, pose):
+        """Estimate achieved planar/yaw velocity from consecutive TF poses."""
+        pose = np.asarray(pose, dtype=float).reshape(-1)[:3]
+        if self._previous_measured_pose is None:
+            self._previous_measured_pose = pose.copy()
+            return self._estimated_velocity.copy()
+        delta = pose - self._previous_measured_pose
+        delta[2] = normalize_angle(delta[2])
+        raw = delta / self.dt
+        speed = np.linalg.norm(raw[:2])
+        if speed > self.params["max_velocity"]:
+            raw[:2] *= self.params["max_velocity"] / speed
+        raw[2] = np.clip(
+            raw[2], -self.params["max_yaw_velocity"], self.params["max_yaw_velocity"]
+        )
+        alpha = self.velocity_estimate_alpha
+        self._estimated_velocity = alpha * raw + (1.0 - alpha) * self._estimated_velocity
+        self._previous_measured_pose = pose.copy()
+        return self._estimated_velocity.copy()
+
+    def measurement_likelihoods(self, robot_pose, detector_scores):
+        """Evaluate the learned generative sensor model for realized observations."""
+        pose = np.asarray(robot_pose, dtype=float).reshape(-1)[:3]
+        relative = pose[None, :2] - self.trees_pos[:, :2]
+        direction_to_tree = np.arctan2(
+            self.trees_pos[:, 1] - pose[1],
+            self.trees_pos[:, 0] - pose[0],
+        )
+        relative_yaw = direction_to_tree - pose[2] - float(self.params["camera_yaw_offset"])
+        relative_yaw = np.arctan2(np.sin(relative_yaw), np.cos(relative_yaw))
+        features = np.column_stack(
+            (relative, relative_yaw)
+        )
+        structured = self._evaluate_l4c_nn_fixed_batches(features)
+        categories = self.optimizer.observed_categories(
+            detector_scores, self.observation_decision_margin
+        )
+        return self.optimizer.realized_likelihoods(structured, categories)
+
+    def _evaluate_l4c_nn_fixed_batches(self, features):
+        """Evaluate L4CasADi using the fixed batch shape created for planning."""
+        features = np.asarray(features, dtype=float)
+        if features.ndim != 2 or features.shape[1] != int(self.params["nn_input_dim"]):
+            raise ValueError("features must have shape N x nn_input_dim")
+        if len(features) == 0:
+            return np.zeros((0, int(self.params["nn_output_dim"])), dtype=float)
+
+        batch_size = max(1, int(getattr(self, "nn_batch_size", self.N * self.num_target_trees)))
+        outputs = []
+        for start in range(0, len(features), batch_size):
+            chunk = features[start:start + batch_size]
+            chunk_len = len(chunk)
+            if chunk_len < batch_size:
+                padding = np.repeat(chunk[-1:, :], batch_size - chunk_len, axis=0)
+                chunk = np.vstack((chunk, padding))
+            evaluated = np.asarray(self.l4c_nn(ca.DM(chunk)), dtype=float)
+            outputs.append(evaluated[:chunk_len])
+        return np.vstack(outputs)
 
     def generate_seeded_initial_state(self):
         start_pose = self.params.get("start_pose")
@@ -183,8 +264,9 @@ class NeuralMPC:
         self.params["trial_seed"] = self.base_seed + self.run_index
         self.params["run_dir"] = os.path.join(self.run_root, "nmpc_run_{:03d}".format(self.run_index))
         self.beliefs_k = ca.DM.ones(self.num_total_trees, 2) * 0.5
+        self._previous_measured_pose = None
+        self._estimated_velocity = np.zeros(3, dtype=float)
         self.ros.latest_tree_scores = None
-        dynamics = self.optimizer.kin_model(self.n_state, self.n_control, self.dt)
         lb, ub = get_domain(self.trees_pos)
         current_state = None
 
@@ -197,7 +279,7 @@ class NeuralMPC:
             rospy.sleep(self.wait_sleep)
         rospy.loginfo("Robot pose received.")
 
-        vx_k = ca.DM.zeros(self.nx)
+        vx_k = ca.DM(self.estimate_velocity(current_state))
         x_k = ca.vertcat(ca.DM(current_state), vx_k)
 
         all_trajectories = []
@@ -226,6 +308,7 @@ class NeuralMPC:
         mpc_step = None
         last_score_sequence = 0
         termination_reason = "max_experiment_steps"
+        consecutive_solver_failures = 0
 
         for mpciter in range(self.sim_steps):
             if rospy.is_shutdown():
@@ -235,12 +318,14 @@ class NeuralMPC:
             loop_start = time.time()
             rospy.loginfo_throttle(5.0, "NMPC step: %d", mpciter)
             current_state = self._wait_for_robot_state()
+            vx_k = ca.DM(self.estimate_velocity(current_state))
             x_k = ca.vertcat(ca.DM(current_state), vx_k)
 
-            if last_score_sequence == 0:
-                scores, score_sequence = self.ros.wait_for_new_tree_scores(last_score_sequence)
-            else:
-                scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
+            # Perception is asynchronous.  The controller can plan from the
+            # current prior before the first score arrives; blocking here used
+            # to leave the drone stationary whenever the detector was late or
+            # temporarily unavailable.
+            scores, score_sequence = self.ros.get_new_tree_scores(last_score_sequence)
             if (
                 scores is not None
                 and self.belief_update_period > 0
@@ -254,9 +339,10 @@ class NeuralMPC:
                 )
                 last_score_sequence = score_sequence
                 try:
+                    likelihoods = self.measurement_likelihoods(current_state, scores)
                     beliefs = self.optimizer.bayes_numpy(
                         beliefs,
-                        scores,
+                        likelihoods,
                         update_mask=update_mask,
                     )
                 except ValueError as exc:
@@ -308,21 +394,58 @@ class NeuralMPC:
                     u, x_traj, x_dec_prev, lam_g_prev = mpc_step(p0_val, x_dec_prev, lam_g_prev)
             except Exception as exc:
                 rospy.logerr("Error during MPC optimization at step %d: %s", mpciter, exc)
-                return
+                consecutive_solver_failures += 1
+                warm_start = True
+                mpc_step = None
+                x_dec_prev = None
+                lam_g_prev = None
+                vx_k = ca.DM.zeros(self.nx)
+                self.ros.publish_pose(current_state)
+                if consecutive_solver_failures >= self.params["solver_failure_limit"]:
+                    termination_reason = "solver_failure_limit"
+                    rospy.logerr(
+                        "Stopping after %d consecutive NMPC failures.",
+                        consecutive_solver_failures,
+                    )
+                    break
+                self._sleep_for_rate(rate, loop_start, mpciter)
+                continue
+
+            consecutive_solver_failures = 0
 
             step_duration = time.perf_counter() - step_start
             durations.append(step_duration)
             metrics.log({"mpc_step_duration_s": step_duration})
 
-            cmd_pose = dynamics(x_k, u[:, 0])
+            feedback_pose = self.robot_state_update()
+            if feedback_pose is None:
+                feedback_pose = current_state
+            desired_state = self._command_reference_from_trajectory(x_traj, step_duration)
+            cmd_pose = self.optimizer.bounded_pose_command(
+                feedback_pose,
+                desired_state[:self.nx],
+                self.dt,
+                self.params["max_velocity"],
+                self.params["max_yaw_velocity"],
+            )
+            self._log_command_diagnostics(
+                target_indices,
+                target_trees,
+                feedback_pose,
+                desired_state,
+                cmd_pose,
+                step_duration,
+            )
             if publish_visualization and self.pred_path_pub is not None:
                 self.pred_path_pub.publish(create_path_from_mpc_prediction(x_traj[:self.nx, 1:]))
             self.ros.publish_pose(cmd_pose)
 
-            vx_k = cmd_pose[self.nx:]
-            vx_val = float(vx_k[0])
-            vy_val = float(vx_k[1])
-            yaw_val = float(vx_k[2])
+            command_delta = np.asarray(cmd_pose) - np.asarray(feedback_pose)
+            command_delta[2] = normalize_angle(command_delta[2])
+            commanded_velocity = command_delta / self.dt
+            vx_val = float(commanded_velocity[0])
+            vy_val = float(commanded_velocity[1])
+            yaw_val = float(commanded_velocity[2])
             sum_vx += vx_val
             sum_vy += vy_val
             sum_yaw += yaw_val
@@ -378,6 +501,55 @@ class NeuralMPC:
             rospy.sleep(self.wait_sleep)
             current_state = self.robot_state_update()
         return current_state
+
+    def _command_reference_from_trajectory(self, x_traj, elapsed_s):
+        """Select a non-stale trajectory waypoint after a slow optimization."""
+        elapsed_s = max(0.0, float(elapsed_s))
+        step_index = int(math.ceil(elapsed_s / max(self.dt, 1e-6)))
+        step_index = min(max(1, step_index), x_traj.size2() - 1)
+        return x_traj[:self.nx, step_index]
+
+    def _log_command_diagnostics(
+        self,
+        target_indices,
+        target_trees,
+        feedback_pose,
+        desired_state,
+        cmd_pose,
+        solve_time,
+    ):
+        if len(target_indices) == 0 or len(target_trees) == 0:
+            return
+        feedback = np.asarray(feedback_pose, dtype=float).reshape(-1)[:3]
+        desired = np.asarray(desired_state, dtype=float).reshape(-1)[:3]
+        command = np.asarray(cmd_pose, dtype=float).reshape(-1)[:3]
+        target = np.asarray(target_trees[0], dtype=float).reshape(-1)[:2]
+        desired_yaw = math.atan2(target[1] - feedback[1], target[0] - feedback[0]) - float(
+            self.params["camera_yaw_offset"]
+        )
+        yaw_error = normalize_angle(desired_yaw - feedback[2])
+        rospy.loginfo_throttle(
+            2.0,
+            (
+                "NMPC command target=%d target_xy=(%.2f, %.2f) solve=%.3fs "
+                "pose=(%.2f, %.2f, %.2f) desired=(%.2f, %.2f, %.2f) "
+                "cmd=(%.2f, %.2f, %.2f) yaw_error=%.2f"
+            ),
+            int(target_indices[0]),
+            target[0],
+            target[1],
+            float(solve_time),
+            feedback[0],
+            feedback[1],
+            feedback[2],
+            desired[0],
+            desired[1],
+            desired[2],
+            command[0],
+            command[1],
+            command[2],
+            yaw_error,
+        )
 
     def _sleep_for_rate(self, rate, loop_start, mpciter):
         loop_elapsed = time.time() - loop_start

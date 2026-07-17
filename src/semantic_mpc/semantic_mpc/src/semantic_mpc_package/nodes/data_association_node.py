@@ -13,6 +13,7 @@ from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 import tf
 import tf.transformations as tf_trans
 import message_filters
+from semantic_mpc_package.perception_protocol import categorical_tree_scores
 
 
 def _as_bool(value):
@@ -53,6 +54,8 @@ def load_params():
         "default_tree_score": float(rospy.get_param("~default_tree_score", 0.5)),
         "score_midpoint": float(rospy.get_param("~score_midpoint", 5.0)),
         "score_steepness": float(rospy.get_param("~score_steepness", 10.0)),
+        "minimum_detection_score": float(rospy.get_param("~minimum_detection_score", 0.0)),
+        "minimum_tree_detections": int(rospy.get_param("~minimum_tree_detections", 5)),
         "ripe_class_id": int(rospy.get_param("~ripe_class_id", 2)),
         "raw_class_label": rospy.get_param("~raw_class_label", "raw"),
         "ripe_class_label": rospy.get_param("~ripe_class_label", "ripe"),
@@ -251,36 +254,20 @@ class DataAssociationNode:
             rospy.logwarn("Could not get drone position, skipping distance check.")
             drone_x, drone_y = None, None
 
-        # Initialize base scores for each tree
-        tree_scores = np.ones(len(self.tree_poses)) * self.params["default_tree_score"]
-
-        # Update tree scores
-        for i, fruits in associated_fruits.items():
-            ripe_scores = fruits.get("ripe", [])
-            raw_scores  = fruits.get("raw", [])
-            tree_x, tree_y = self.tree_poses[i]
-
-            if drone_x is not None:
-                dist = np.hypot(drone_x - tree_x, drone_y - tree_y)
-                if dist < self.params["observation_distance"]:
-                    ripe_value = weight_value(
-                        len(ripe_scores),
-                        np.mean(ripe_scores) if ripe_scores else 0,
-                        midpoint=self.params["score_midpoint"],
-                        steepness=self.params["score_steepness"],
-                    )
-                    raw_value = weight_value(
-                        len(raw_scores),
-                        np.mean(raw_scores) if raw_scores else 0,
-                        midpoint=self.params["score_midpoint"],
-                        steepness=self.params["score_steepness"],
-                    )
-                    tree_scores[i] = ripe_value - raw_value + self.params["default_tree_score"]
-
-        # Build valid categorical likelihoods [P(ripe), P(raw)]. Numerical
-        # clipping prevents negative/zero likelihoods from corrupting Bayes.
-        tree_scores = np.clip(tree_scores, 1e-6, 1.0 - 1e-6)
-        scores_with_neg = np.stack([tree_scores, 1-tree_scores], axis=1)  # shape (N,2)
+        # Binary perception protocol: finite rows are categorical detector
+        # evidence [ripe, raw]. [nan, nan] explicitly means no measurement and
+        # therefore masks the Bayes update; it is not an MLP output class.
+        scores_with_neg = categorical_tree_scores(
+            associated_fruits,
+            len(self.tree_poses),
+            minimum_score=self.params["minimum_detection_score"],
+            minimum_tree_detections=self.params["minimum_tree_detections"],
+        )
+        if drone_x is None:
+            scores_with_neg[:] = np.nan
+        else:
+            distances = np.linalg.norm(self.tree_poses - np.asarray([drone_x, drone_y]), axis=1)
+            scores_with_neg[distances >= self.params["observation_distance"]] = np.nan
 
         # Publish as a 2D multiarray
         msg = Float32MultiArray()
@@ -301,8 +288,8 @@ class DataAssociationNode:
 
         if self.publish_score_markers:
             markers = MarkerArray()
-            for i, (tree_pos, score) in enumerate(zip(self.tree_poses, tree_scores)):
-                score = float(np.clip(score, 0.0, 1.0))
+            for i, (tree_pos, score_row) in enumerate(zip(self.tree_poses, scores_with_neg)):
+                score = float(score_row[0]) if np.all(np.isfinite(score_row)) else 0.5
                 marker = Marker()
                 marker.header = detection_msg.header
                 marker.header.frame_id = self.params["map_frame"]

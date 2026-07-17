@@ -1,89 +1,106 @@
+import json
 import os
 import re
 
-import l4casadi as l4c
 import rospy
-import torch
-import torch.nn.functional as F
-
-torch.jit.set_fusion_strategy([("STATIC", 0)])
 
 
-class MultiLayerPerceptron(torch.nn.Module):
-    def __init__(
-        self,
-        input_dim,
-        hidden_size=64,
-        hidden_layers=3,
-        output_dim=2,
-        threshold=8.0,
-        gate_slope=10.0,
-    ):
-        super().__init__()
-        in_features = input_dim if input_dim != 3 else input_dim + 1
-        self.input_layer = torch.nn.Linear(in_features, hidden_size)
-        self.hidden_layers = torch.nn.ModuleList(
-            [torch.nn.Linear(hidden_size, hidden_size) for _ in range(hidden_layers)]
+def _checkpoint_epoch(path):
+    match = re.match(r"best_model_epoch_(\d+)\.pth", os.path.basename(path))
+    if not match:
+        return -1
+    return int(match.group(1))
+
+
+def _checkpoint_metadata(path):
+    metadata_path = os.path.join(os.path.dirname(path), "training_metadata.json")
+    if not os.path.isfile(metadata_path):
+        return {}
+    with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+        return json.load(metadata_file)
+
+
+def _is_compatible_checkpoint(path, params):
+    metadata = _checkpoint_metadata(path)
+    labels = metadata.get("output_labels")
+    expected_labels = params.get("nn_output_labels")
+    if labels is not None and expected_labels is not None:
+        if list(labels) != list(expected_labels):
+            return False
+    expected_architecture = {
+        "hidden_size": int(params.get("hidden_size", 64)),
+        "hidden_layers": int(params.get("hidden_layers", 3)),
+        "yaw_harmonics": int(params.get("nn_yaw_harmonics", 1)),
+        "include_alignment_features": bool(
+            params.get("nn_include_alignment_features", False)
+        ),
+    }
+    legacy_defaults = {
+        "hidden_size": 64,
+        "hidden_layers": 3,
+        "yaw_harmonics": 1,
+        "include_alignment_features": False,
+    }
+    for key, expected in expected_architecture.items():
+        if key not in metadata:
+            if expected != legacy_defaults[key]:
+                return False
+            continue
+        if metadata[key] != expected:
+            return False
+    return True
+
+
+def get_latest_best_model(params):
+    explicit_model = params.get("nn_model_path")
+    if explicit_model not in (None, "", []):
+        model_path = os.path.expandvars(os.path.expanduser(str(explicit_model)))
+        if not os.path.isfile(model_path):
+            raise FileNotFoundError("Configured nn_model_path does not exist: {}".format(model_path))
+        if not _is_compatible_checkpoint(model_path, params):
+            raise ValueError("Configured nn_model_path is not compatible: {}".format(model_path))
+        rospy.loginfo("Loading configured NMPC model: %s", model_path)
+        return model_path
+
+    configured_dir = params.get("nn_model_dir")
+    model_dir = os.path.expandvars(os.path.expanduser(str(configured_dir))) if configured_dir else None
+    if not model_dir:
+        model_dir = os.environ.get(
+            "NMPC_MODEL_DIR",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "models"),
         )
-        self.out_layer = torch.nn.Linear(hidden_size, output_dim)
-        self.register_buffer("threshold", torch.tensor(threshold))
-        self.register_buffer("gate_slope", torch.tensor(gate_slope))
-
-    def forward(self, x):
-        if x.shape[-1] == 3:
-            sin_cos = torch.cat([torch.sin(x[..., -1:]), torch.cos(x[..., -1:])], dim=-1)
-            x = torch.cat([x[..., :-1], sin_cos], dim=-1)
-
-        raw_2d = x[..., :2]
-        norm2d = raw_2d.norm(dim=-1)
-        gate = torch.sigmoid(self.gate_slope * (self.threshold - norm2d))
-
-        h = torch.tanh(self.input_layer(x))
-        for layer in self.hidden_layers:
-            h = torch.tanh(layer(h))
-        logits = self.out_layer(h)
-        return F.softmax(logits * gate.unsqueeze(-1), dim=-1)
-
-
-def get_latest_best_model(label):
-    model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", label)
-    model_files = [
-        filename
-        for filename in os.listdir(model_dir)
-        if re.match(r"best_model_epoch_(\d+)\.pth", filename)
-    ]
+    model_files = []
+    for root, _, filenames in os.walk(model_dir):
+        for filename in filenames:
+            if re.match(r"best_model_epoch_(\d+)\.pth", filename):
+                path = os.path.join(root, filename)
+                if _is_compatible_checkpoint(path, params):
+                    model_files.append(path)
     if not model_files:
-        raise FileNotFoundError("No model files found in {}".format(model_dir))
-    latest_model = max(
-        model_files,
-        key=lambda filename: int(re.match(r"best_model_epoch_(\d+)\.pth", filename).group(1)),
-    )
-    model_path = os.path.join(model_dir, latest_model)
-    rospy.loginfo("Loading model: %s", model_path)
+        raise FileNotFoundError("No compatible model files found in {}".format(model_dir))
+    latest_model = max(model_files, key=_checkpoint_epoch)
+    model_path = latest_model
+    rospy.loginfo("Loading latest compatible NMPC model from %s: %s", model_dir, model_path)
     return model_path
 
 
-def load_l4casadi_models(params):
-    models = []
-    for label in list(params["model_labels"]):
-        model = MultiLayerPerceptron(
-            input_dim=int(params["nn_input_dim"]),
-            hidden_size=int(params["hidden_size"]),
-            hidden_layers=int(params["hidden_layers"]),
-            output_dim=int(params["nn_output_dim"]),
-            threshold=float(params["nn_threshold"]),
-            gate_slope=float(params["nn_gate_slope"]),
-        )
-        model.load_state_dict(
-            torch.load(get_latest_best_model(label), map_location=torch.device(params["model_device"]))
-        )
-        model.eval()
-        models.append(
-            l4c.L4CasADi(
-                model,
-                batched=True,
-                device=params["model_device"],
-                name=label,
-            )
-        )
-    return models
+def load_l4casadi_model(params):
+    import l4casadi as l4c
+    import torch
+
+    from semantic_mpc_package.perception_model import MultiLayerPerceptron
+
+    torch.jit.set_fusion_strategy([("STATIC", 0)])
+    model = MultiLayerPerceptron(
+        input_dim=int(params["nn_input_dim"]), hidden_size=int(params["hidden_size"]),
+        hidden_layers=int(params["hidden_layers"]), output_dim=int(params["nn_output_dim"]),
+        threshold=float(params["nn_threshold"]), gate_slope=float(params["nn_gate_slope"]),
+        yaw_harmonics=int(params.get("nn_yaw_harmonics", 1)),
+        include_alignment_features=bool(params.get("nn_include_alignment_features", False)),
+        output_temperature=float(params.get("nn_output_temperature", 1.0)),
+    )
+    model.load_state_dict(torch.load(
+        get_latest_best_model(params), map_location=torch.device(params["model_device"])
+    ))
+    model.eval()
+    return l4c.L4CasADi(model, batched=True, device=params["model_device"], name="perception")

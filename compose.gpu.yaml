@@ -8,6 +8,10 @@ x-gpu-runtime: &gpu-runtime
             capabilities: [gpu]
 
 services:
+  dataset-generate:
+    <<: *gpu-runtime
+  model-train:
+    <<: *gpu-runtime
   baseline:
     <<: *gpu-runtime
   rl:
