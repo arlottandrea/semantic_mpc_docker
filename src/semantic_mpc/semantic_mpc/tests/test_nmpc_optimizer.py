@@ -191,7 +191,7 @@ class NmpcOptimizerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             NmpcOptimizer.observed_categories([[np.nan, 0.5]])
 
-    def test_horizon_entropy_propagates_sequential_bayes_updates(self):
+    def test_deterministic_horizon_entropy_compounds_information(self):
         optimizer = object.__new__(NmpcOptimizer)
         optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
         prior = ca.MX.sym("horizon_prior", 1, 2)
@@ -205,6 +205,18 @@ class NmpcOptimizerTest(unittest.TestCase):
 
         self.assertLess(second, first)
         self.assertGreaterEqual(second, 0.0)
+
+    def test_deterministic_rollout_matches_exact_rollout_for_one_step(self):
+        optimizer = object.__new__(NmpcOptimizer)
+        optimizer.entropy_target = NmpcOptimizer.entropy_f(1)
+        prior = ca.MX.sym("one_step_prior", 1, 2)
+        ripe = ca.DM([[0.25, 0.75]])
+        raw = ca.DM([[0.85, 0.15]])
+        approximate = optimizer.expected_entropy_horizon(prior, [ripe], [raw])[0]
+        exact = optimizer.exact_expected_entropy_horizon(prior, [ripe], [raw])[0]
+        function = ca.Function("one_step_rollout_match", [prior], [approximate, exact])
+        approximate_value, exact_value = function(ca.DM([[0.4, 0.6]]))
+        self.assertAlmostEqual(float(approximate_value), float(exact_value), places=10)
 
     def test_three_outcome_horizon_entropy_is_monotone(self):
         optimizer = object.__new__(NmpcOptimizer)

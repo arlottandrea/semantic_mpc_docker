@@ -247,7 +247,7 @@ class NmpcOptimizer:
             total += float(dt) * entropy
         return total
 
-    def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
+    def exact_expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
         """Expected posterior entropy after each sequential horizon measurement.
 
         The belief tree branches over both possible observations.  This is
@@ -290,6 +290,48 @@ class NmpcOptimizer:
             for branch_probability, posterior in branches:
                 expected_entropy += branch_probability * self.entropy_target(posterior)
             stage_entropies.append(expected_entropy)
+        return stage_entropies
+
+    def expected_entropy_horizon(self, prior, likelihoods_if_class0, likelihoods_if_class1):
+        """Linear deterministic approximation of the belief-space rollout.
+
+        The posterior belief is a martingale: after marginalizing the future
+        observation, its expected value equals the current belief.  Propagating
+        that mean alone would therefore predict no information gain.  We retain
+        the deterministic mean belief and additionally propagate expected
+        entropy.  At each step the one-measurement expected posterior entropy
+        defines an entropy-retention factor, and the factors are compounded
+        along the horizon.
+
+        This moment closure costs O(horizon * targets), instead of enumerating
+        the O(2**horizon) observation tree.  It is exact for one step and is an
+        approximation from the second step onward.
+        """
+        if len(likelihoods_if_class0) != len(likelihoods_if_class1):
+            raise ValueError("class likelihood horizons must have equal length")
+
+        eps = 1e-9
+        expected_belief = prior
+        belief_entropy = self.entropy_target(expected_belief)
+        expected_entropy = belief_entropy
+        stage_entropies = []
+
+        for class0, class1 in zip(likelihoods_if_class0, likelihoods_if_class1):
+            if class0.size2() != class1.size2():
+                raise ValueError("class likelihoods must have equal outcome counts")
+            one_step_entropy = self.expected_posterior_entropy(
+                expected_belief, class0, class1
+            )
+            retention = ca.fmin(
+                1.0,
+                ca.fmax(0.0, one_step_entropy / ca.fmax(eps, belief_entropy)),
+            )
+            expected_entropy = expected_entropy * retention
+            stage_entropies.append(expected_entropy)
+
+            # E[P(C | Z)] = P(C): the deterministic expected belief remains
+            # unchanged.  Entropy is tracked separately because H is concave.
+
         return stage_entropies
 
     @staticmethod
@@ -552,10 +594,9 @@ class NmpcOptimizer:
             likelihoods_ripe.append(surrogate_output_ripe[start:stop, :])
             likelihoods_raw.append(surrogate_output_raw[start:stop, :])
 
-        # Exact open-loop belief-space objective.  Every possible observation
-        # sequence is marginalized and Bayes' rule is applied recursively.
-        # Discounted entropy reductions reward information obtained earlier
-        # without counting the same uncertainty more than once.
+        # Deterministic moment rollout.  Expected belief and expected entropy
+        # are propagated with linear horizon complexity.  Every stage enters
+        # the objective, rewarding information obtained earlier.
         horizon_entropies = self.expected_entropy_horizon(
             L0, likelihoods_ripe, likelihoods_raw
         )
