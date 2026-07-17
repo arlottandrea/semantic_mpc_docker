@@ -932,7 +932,8 @@ function colorMap(value, cmap) {
     const stops = [[0,0,4],[73,16,108],[182,55,121],[251,136,97],[252,253,191]];
     return interpStops(stops, t);
   }
-  const stops = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+  // Probability panels use a perceptually ordered blue -> yellow scale.
+  const stops = [[23,59,143],[38,112,173],[65,160,180],[171,202,118],[253,231,37]];
   return interpStops(stops, t);
 }
 function interpStops(stops, t) {
@@ -1032,7 +1033,10 @@ function drawPanel(canvasId, values, cmap, selectedYawDeg) {
     for (let col = 0; col < n; col++) {
       const src = (n - 1 - row) * n + col;
       const dst = (row * n + col) * 4;
-      const [r, g, b] = colorMap(values[src], cmap);
+      // Reliability is constrained to [0.5, 1]: map neutral 0.5 to blue and
+      // fully reliable 1.0 to yellow. Entropy retains its native [0, 1] map.
+      const colorValue = cmap === "magma" ? values[src] : 2.0 * (values[src] - 0.5);
+      const [r, g, b] = colorMap(colorValue, cmap);
       image.data[dst] = r;
       image.data[dst + 1] = g;
       image.data[dst + 2] = b;
