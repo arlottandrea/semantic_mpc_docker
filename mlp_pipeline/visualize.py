@@ -81,6 +81,8 @@ def read_dataset(path, label, root, minimum, output_dim):
             raw_scores,
             minimum_score=float(root["training"].get("minimum_detection_score", 0.0)),
             minimum_tree_detections=minimum,
+            evidence_count_midpoint=root["training"].get("evidence_count_midpoint"),
+            evidence_count_steepness=float(root["training"].get("evidence_count_steepness", 1.0)),
         )
         visible = float(np.all(np.isfinite(observation)))
         p_ripe = float(observation[0]) if visible else 0.5
@@ -88,10 +90,10 @@ def read_dataset(path, label, root, minimum, output_dim):
         raw_accuracy = max(0.5, 1.0 - p_ripe)
         ripe_accuracy = max(0.5, p_ripe)
         if output_dim == 4:
-            raw_row = [0.5, 0.5] if visibility < 0.5 else [
+            raw_row = [0.5, 0.5] if visible < 0.5 else [
                 raw_accuracy, 1.0 - raw_accuracy
             ]
-            ripe_row = [0.5, 0.5] if visibility < 0.5 else [
+            ripe_row = [0.5, 0.5] if visible < 0.5 else [
                 1.0 - ripe_accuracy, ripe_accuracy
             ]
             target = np.asarray([*raw_row, *ripe_row], dtype=np.float32)

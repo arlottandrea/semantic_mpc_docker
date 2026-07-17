@@ -1,6 +1,18 @@
 import numpy as np
 
-from semantic_mpc_package.perception_protocol import categorical_tree_scores
+from semantic_mpc_package.perception_protocol import categorical_tree_scores, tree_observation_scores
+
+
+def test_detection_count_scales_evidence_toward_neutral():
+    weak = tree_observation_scores(
+        [0.9] * 5, [], minimum_tree_detections=5,
+        evidence_count_midpoint=7, evidence_count_steepness=0.8,
+    )
+    strong = tree_observation_scores(
+        [0.9] * 10, [], minimum_tree_detections=5,
+        evidence_count_midpoint=7, evidence_count_steepness=0.8,
+    )
+    assert strong[0] > weak[0] >= 0.5
 
 
 def test_scores_are_ripe_raw_categorical_and_missing_is_nan_mask():
