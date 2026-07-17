@@ -770,7 +770,6 @@ def plot_mlp_heatmap(path, data, grid_size=121, radius=6.0, dataset_points=None)
         (ripe_correct, "P(obs=ripe | true=ripe)", "viridis", 0.0, 1.0),
         (expected_entropy, "Expected posterior entropy [bits]", "magma", 0.0, 1.0),
     ]
-    dataset_tolerance = np.deg2rad(8.0)
     for ax, (values, title, cmap, vmin, vmax) in zip(axes, panels):
         image = ax.imshow(
             values,
@@ -782,7 +781,6 @@ def plot_mlp_heatmap(path, data, grid_size=121, radius=6.0, dataset_points=None)
             aspect="equal",
         )
         fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
-        plot_dataset_overlay(ax, dataset_points or [], final_relative_yaw, dataset_tolerance)
         ax.plot(trajectory[0], trajectory[1], color="#f97316", linewidth=1.6, label="trajectory")
         ax.scatter(trajectory[0, -1], trajectory[1, -1], color="#1d4ed8", marker="*", s=110, label="final")
         ax.scatter(target[0], target[1], color="#16a34a", marker="^", s=100, label="tree")
@@ -832,11 +830,7 @@ def build_interactive_heatmap_payload(data, dataset_points, grid_size, radius, y
     grid_size = max(5, int(grid_size))
     radius = float(radius)
 
-    dataset_yaws = dataset_yaw_values(dataset_points, max_values=max(3, int(yaw_steps)))
-    if dataset_yaws:
-        yaw_frames = dataset_yaws
-    else:
-        yaw_frames = np.linspace(-np.pi, np.pi, max(3, int(yaw_steps))).tolist()
+    yaw_frames = np.linspace(-np.pi, np.pi, max(3, int(yaw_steps))).tolist()
     final_relative_yaw = relative_mlp_yaw_from_pose(
         trajectory[:3, -1],
         target,
@@ -877,7 +871,6 @@ def build_interactive_heatmap_payload(data, dataset_points, grid_size, radius, y
             }
         )
 
-    tolerance = yaw_tolerance_from_frames(yaw_frames)
     return {
         "gridSize": grid_size,
         "extent": [float(xs[0]), float(xs[-1]), float(ys[0]), float(ys[-1])],
@@ -888,13 +881,6 @@ def build_interactive_heatmap_payload(data, dataset_points, grid_size, radius, y
             "x": np.round(trajectory[0], 4).tolist(),
             "y": np.round(trajectory[1], 4).tolist(),
             "yawDeg": np.round(np.rad2deg(trajectory[2]), 3).tolist(),
-        },
-        "dataset": {
-            "x": [round(point["x"], 4) for point in dataset_points],
-            "y": [round(point["y"], 4) for point in dataset_points],
-            "yawDeg": [round(float(np.rad2deg(point["yaw"])), 3) for point in dataset_points],
-            "label": [point["label"] for point in dataset_points],
-            "yawToleranceDeg": round(float(np.rad2deg(tolerance)), 3),
         },
         "frames": frames,
     }
@@ -918,12 +904,11 @@ input[type="range"] { width: 420px; max-width: 55vw; }
 </style>
 </head>
 <body>
-<h2>Trained MLP Heatmap with Dataset Overlay</h2>
+<h2>Trained MLP Heatmap</h2>
 <div class="controls">
   <label for="yawSlider">MLP relative yaw</label>
   <input id="yawSlider" type="range" min="0" max="0" value="0" step="1">
   <strong id="yawValue"></strong>
-  <span id="datasetCount"></span>
 </div>
 <div class="panels">
   <div class="panel"><h3>P(obs=raw | true=raw)</h3><canvas id="rawPanel" width="520" height="520"></canvas></div>
@@ -931,14 +916,12 @@ input[type="range"] { width: 420px; max-width: 55vw; }
   <div class="panel"><h3>Expected posterior entropy [bits], prior=[0.5, 0.5]</h3><canvas id="entropyPanel" width="520" height="520"></canvas></div>
 </div>
 <div class="legend">
-Dataset points are filtered to the selected MLP relative-yaw slice. Orange = raw dataset, green = ripe dataset.
 Blue star/arrow = final drone pose, violet arrow = selected orientation wrt tree, green triangle = tree, red circle = safe distance.
 </div>
 <script>
 const payload = __PAYLOAD__;
 const slider = document.getElementById("yawSlider");
 const yawValue = document.getElementById("yawValue");
-const datasetCount = document.getElementById("datasetCount");
 slider.max = payload.frames.length - 1;
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -968,12 +951,6 @@ function worldToCanvas(x, y, canvas) {
     (x - xmin) / (xmax - xmin) * canvas.width,
     canvas.height - (y - ymin) / (ymax - ymin) * canvas.height
   ];
-}
-function yawDiffDeg(a, b) {
-  let d = a - b;
-  while (d > 180) d -= 360;
-  while (d < -180) d += 360;
-  return Math.abs(d);
 }
 function drawArrow(ctx, x, y, angleRad, length, color, lineWidth, dash) {
   const endX = x + length * Math.cos(angleRad);
@@ -1010,17 +987,6 @@ function drawOverlays(ctx, canvas, selectedYawDeg) {
   }
   ctx.stroke();
 
-  let count = 0;
-  for (let i = 0; i < payload.dataset.x.length; i++) {
-    if (yawDiffDeg(payload.dataset.yawDeg[i], selectedYawDeg) > payload.dataset.yawToleranceDeg) continue;
-    const [cx, cy] = worldToCanvas(payload.dataset.x[i], payload.dataset.y[i], canvas);
-    ctx.fillStyle = payload.dataset.label[i] === "raw" ? "rgba(249,115,22,0.45)" : "rgba(34,197,94,0.45)";
-    ctx.beginPath();
-    ctx.arc(cx, cy, 2.0, 0, 2 * Math.PI);
-    ctx.fill();
-    count += 1;
-  }
-
   const [tx, ty] = worldToCanvas(payload.target[0], payload.target[1], canvas);
   const [sx, sy] = worldToCanvas(payload.target[0] + payload.safeDistance, payload.target[1], canvas);
   ctx.strokeStyle = "#dc2626";
@@ -1056,7 +1022,6 @@ function drawOverlays(ctx, canvas, selectedYawDeg) {
   ctx.fill();
   drawArrow(ctx, fx, fy, yawRad, 24, "#1d4ed8", 3, []);
   drawArrow(ctx, fx, fy, selectedStateYawRad, 34, "#7c3aed", 3, []);
-  return count;
 }
 function drawPanel(canvasId, values, cmap, selectedYawDeg) {
   const canvas = document.getElementById(canvasId);
@@ -1080,15 +1045,14 @@ function drawPanel(canvasId, values, cmap, selectedYawDeg) {
   offscreen.getContext("2d").putImageData(image, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
-  return drawOverlays(ctx, canvas, selectedYawDeg);
+  drawOverlays(ctx, canvas, selectedYawDeg);
 }
 function redraw() {
   const frame = payload.frames[Number(slider.value)];
   yawValue.textContent = `${frame.yaw_deg.toFixed(1)} deg`;
   drawPanel("rawPanel", frame.raw, "viridis", frame.yaw_deg);
   drawPanel("ripePanel", frame.ripe, "viridis", frame.yaw_deg);
-  const count = drawPanel("entropyPanel", frame.entropy, "magma", frame.yaw_deg);
-  datasetCount.textContent = `${count} dataset samples in yaw slice`;
+  drawPanel("entropyPanel", frame.entropy, "magma", frame.yaw_deg);
 }
 slider.addEventListener("input", redraw);
 redraw();
@@ -1130,17 +1094,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.weights_cache is None:
         args.weights_cache = str(output_dir / "{}_casadi_weights.npz".format(Path(args.checkpoint).stem))
-    dataset_paths = (
-        [Path(path) for path in args.dataset_csv]
-        if args.dataset_csv is not None
-        else checkpoint_dataset_paths(args.checkpoint)
-    )
     data = run_diagnostic(args)
-    dataset_points = load_dataset_points(
-        dataset_paths,
-        data["target"],
-        max_points=args.dataset_max_points,
-    )
+    dataset_points = []
     figure_path = output_dir / "nmpc_one_tree_diagnostic.png"
     heatmap_path = output_dir / "nmpc_one_tree_mlp_heatmap.png"
     interactive_heatmap_path = output_dir / "nmpc_one_tree_mlp_heatmap_interactive.html"
@@ -1168,9 +1123,6 @@ def main():
     print("Saved MLP heatmap to {}".format(heatmap_path))
     print("Saved interactive MLP heatmap to {}".format(interactive_heatmap_path))
     print("Saved diagnostic data to {}".format(csv_path))
-    if dataset_paths:
-        print("Dataset paths: {}".format([str(path) for path in dataset_paths]))
-    print("Dataset points plotted: {}".format(len(dataset_points)))
     first_command = data["commands"][0] if len(data["commands"]) else np.zeros(3)
     command_degrees = first_command.copy()
     command_degrees[2] = np.rad2deg(command_degrees[2])
