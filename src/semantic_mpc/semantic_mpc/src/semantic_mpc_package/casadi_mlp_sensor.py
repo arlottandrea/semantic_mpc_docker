@@ -93,36 +93,24 @@ def encode_pose_casadi(features, yaw_harmonics=4, include_alignment_features=Tru
 
 def trained_mlp_sensor(
     batch_size,
-    raw_checkpoint_path,
+    checkpoint_path,
     weights_cache_path=None,
-    ripe_checkpoint_path=None,
-    ripe_weights_cache_path=None,
     output_temperature=0.4,
     yaw_harmonics=4,
     include_alignment_features=True,
 ):
-    raw_checkpoint_path = Path(raw_checkpoint_path)
-    if ripe_checkpoint_path is None:
-        parts = list(raw_checkpoint_path.parts)
-        try:
-            parts[len(parts) - 1 - parts[::-1].index("raw")] = "ripe"
-        except ValueError as exc:
-            raise ValueError("ripe_checkpoint_path is required unless raw checkpoint is under a raw/ directory") from exc
-        ripe_dir = Path(*parts).parent
-        candidates = sorted(ripe_dir.glob("best_model_epoch_*.pth"))
-        if not candidates:
-            raise FileNotFoundError("no ripe scalar checkpoint found in {}".format(ripe_dir))
-        ripe_checkpoint_path = candidates[-1]
-    raw_state = load_trained_weights(raw_checkpoint_path, weights_cache_path)
-    ripe_state = load_trained_weights(ripe_checkpoint_path, ripe_weights_cache_path)
+    state = load_trained_weights(checkpoint_path, weights_cache_path)
+    yaw_harmonics = int(np.asarray(state.get("yaw_harmonics_buffer", yaw_harmonics)).reshape(-1)[0])
     features = ca.MX.sym("trained_mlp_features", int(batch_size), 3)
     pose_xy = features[:, 0:2]
-    x = encode_pose_casadi(
+    pose_encoded = encode_pose_casadi(
         features,
         yaw_harmonics=yaw_harmonics,
         include_alignment_features=include_alignment_features,
     )
-    def scalar_accuracy(state):
+    def observation_row(true_class):
+        class_column = ca.DM.ones(int(batch_size), 1) * float(true_class)
+        x = ca.horzcat(pose_encoded, class_column)
         h = ca_linear(x, state["input_layer.weight"], state["input_layer.bias"])
         block_count = len(
             {key.split(".")[1] for key in state
@@ -136,7 +124,7 @@ def trained_mlp_sensor(
             h = ca_layer_norm(h + residual, state[prefix + "norm.weight"], state[prefix + "norm.bias"])
         h = ca_layer_norm(h, state["norm.weight"], state["norm.bias"])
         logits = ca_linear(h, state["out_layer.weight"], state["out_layer.bias"])
-        learned = 0.5 + 0.5 / (1.0 + ca.exp(-logits / max(float(output_temperature), 1e-3)))
+        learned = ca_softmax_rows(logits / max(float(output_temperature), 1e-3))
         distance = ca.sqrt(pose_xy[:, 0] ** 2 + pose_xy[:, 1] ** 2 + 1e-6)
         threshold = float(np.asarray(state.get("threshold", 5.0)).reshape(-1)[0])
         gate_slope = float(np.asarray(state.get("gate_slope", 10.0)).reshape(-1)[0])
@@ -147,11 +135,10 @@ def trained_mlp_sensor(
         gate = ca.reshape(range_gate * yaw_gate, int(batch_size), 1)
         return gate * learned + (1.0 - gate) * 0.5
 
-    raw_accuracy = scalar_accuracy(raw_state)
-    ripe_accuracy = scalar_accuracy(ripe_state)
+    raw_row = observation_row(0.0)
+    ripe_row = observation_row(1.0)
     return ca.Function(
         "trained_mlp_sensor_{}".format(int(batch_size)),
         [features],
-        [ca.horzcat(raw_accuracy, 1.0 - raw_accuracy,
-                    1.0 - ripe_accuracy, ripe_accuracy)],
+        [ca.horzcat(raw_row, ripe_row)],
     )

@@ -178,3 +178,77 @@ class DualReliabilityMLP(torch.nn.Module):
             [raw_accuracy, 1.0 - raw_accuracy, 1.0 - ripe_accuracy, ripe_accuracy],
             dim=-1,
         )
+
+
+class ClassConditionedMLP(torch.nn.Module):
+    """Single surrogate ``[relative pose, true class] -> observation row``.
+
+    Class encoding is fixed to ``0=raw`` and ``1=ripe``. The two outputs are
+    ``[P(obs=raw), P(obs=ripe)]`` and always sum to one.
+    """
+
+    def __init__(self, hidden_size=32, hidden_layers=2, threshold=5.0,
+                 gate_slope=10.0, yaw_harmonics=2,
+                 include_alignment_features=True, output_temperature=0.4,
+                 yaw_threshold_deg=30.0, yaw_gate_slope=50.0):
+        super().__init__()
+        self.yaw_harmonics = max(1, int(yaw_harmonics))
+        self.include_alignment_features = bool(include_alignment_features)
+        self.output_temperature = max(float(output_temperature), 1e-3)
+        pose_features = 2 + 2 * self.yaw_harmonics
+        if self.include_alignment_features:
+            pose_features += 5
+        self.input_layer = torch.nn.Linear(pose_features + 1, hidden_size)
+        self.blocks = torch.nn.ModuleList([
+            ResidualBlock(hidden_size, expansion=2) for _ in range(hidden_layers)
+        ])
+        self.norm = torch.nn.LayerNorm(hidden_size)
+        self.out_layer = torch.nn.Linear(hidden_size, 2)
+        self.register_buffer("threshold", torch.tensor(float(threshold)))
+        self.register_buffer("gate_slope", torch.tensor(float(gate_slope)))
+        self.register_buffer("yaw_threshold", torch.tensor(float(yaw_threshold_deg) * torch.pi / 180.0))
+        self.register_buffer("yaw_gate_slope", torch.tensor(float(yaw_gate_slope)))
+        self.register_buffer("yaw_harmonics_buffer", torch.tensor(self.yaw_harmonics))
+
+    def encode(self, x):
+        pose, true_class = x[..., :3], x[..., 3:4]
+        xy, yaw = pose[..., :2], pose[..., 2:3]
+        encoded = [xy]
+        for harmonic in range(1, self.yaw_harmonics + 1):
+            encoded.extend([torch.sin(harmonic * yaw), torch.cos(harmonic * yaw)])
+        if self.include_alignment_features:
+            distance = xy.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            encoded.extend([distance, -xy / distance, torch.cos(yaw), torch.sin(yaw)])
+        encoded.append(true_class)
+        return torch.cat(encoded, dim=-1)
+
+    def forward(self, x):
+        if x.shape[-1] != 4:
+            raise ValueError("class-conditioned MLP expects [x, y, relative_yaw, true_class]")
+        pose = x[..., :3]
+        h = self.input_layer(self.encode(x))
+        for block in self.blocks:
+            h = block(h)
+        learned = torch.softmax(self.out_layer(self.norm(h)) / self.output_temperature, dim=-1)
+        distance = pose[..., :2].norm(dim=-1)
+        range_gate = torch.sigmoid(self.gate_slope * (self.threshold - distance))
+        yaw_gate = torch.sigmoid(
+            self.yaw_gate_slope * (torch.cos(pose[..., 2]) - torch.cos(self.yaw_threshold))
+        )
+        gate = (range_gate * yaw_gate)[..., None]
+        return gate * learned + (1.0 - gate) * torch.full_like(learned, 0.5)
+
+
+class PoseLikelihoodMLP(torch.nn.Module):
+    """Runtime adapter evaluating both true-class hypotheses with one MLP."""
+
+    def __init__(self, conditioned_model):
+        super().__init__()
+        self.conditioned_model = conditioned_model
+
+    def forward(self, pose):
+        zeros = torch.zeros_like(pose[..., :1])
+        ones = torch.ones_like(pose[..., :1])
+        raw_row = self.conditioned_model(torch.cat([pose, zeros], dim=-1))
+        ripe_row = self.conditioned_model(torch.cat([pose, ones], dim=-1))
+        return torch.cat([raw_row, ripe_row], dim=-1)

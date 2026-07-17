@@ -3,8 +3,11 @@ run_dir: "/runs/nmpc_runs"
 
   hidden_size: 32
   hidden_layers: 2
-nn_input_dim: 3
-  nn_output_dim: 1
+  # Runtime adapter receives pose-only features and evaluates class=0 and 1.
+  nn_input_dim: 3
+  nn_conditioned_input_dim: 4
+  nn_output_dim: 4
+  nn_model_type: "class_conditioned"
   nn_yaw_harmonics: 2
 nn_include_alignment_features: true
 nn_output_temperature: 0.4
@@ -14,10 +17,9 @@ nn_gate_slope: 10.0
 model_device: "cuda"
 # L4CasADi deployment checkpoint. Leave nn_model_path empty to select the
 # highest compatible best_model_epoch_*.pth under nn_model_dir.
-  nn_model_dir_raw: "/models/nmpc/fog/dual_mlp/5m/raw"
-  nn_model_dir_ripe: "/models/nmpc/fog/dual_mlp/5m/ripe"
-  nn_model_path_raw: ""
-  nn_model_path_ripe: ""
+  nn_model_dir: "/models/nmpc/fog/class_conditioned/5m"
+  nn_model_path: ""
+  nn_checkpoint_output_labels: ["observed_raw", "observed_ripe"]
 nn_output_labels: ["raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe"]
 
 mpc_horizon: 3

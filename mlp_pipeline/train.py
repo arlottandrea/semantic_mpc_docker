@@ -156,17 +156,23 @@ def train_model(x, target, cfg, device, seed):
         validation_set, batch_size=int(cfg["batch_size"]), num_workers=int(cfg["num_workers"])
     )
 
-    from semantic_mpc_package.perception_model import MultiLayerPerceptron
-    model = MultiLayerPerceptron(
-        input_dim=int(cfg["input_dim"]), hidden_size=int(cfg["hidden_size"]),
-        hidden_layers=int(cfg["hidden_layers"]), output_dim=int(cfg["output_dim"]),
+    from semantic_mpc_package.perception_model import ClassConditionedMLP, MultiLayerPerceptron
+    common_kwargs = dict(
+        hidden_size=int(cfg["hidden_size"]), hidden_layers=int(cfg["hidden_layers"]),
         threshold=float(cfg["threshold"]), gate_slope=float(cfg["gate_slope"]),
         yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
         include_alignment_features=bool(cfg.get("include_alignment_features", False)),
         output_temperature=float(cfg.get("output_temperature", 1.0)),
         yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
         yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
-    ).to(device)
+    )
+    if cfg.get("model_type") == "class_conditioned":
+        model = ClassConditionedMLP(**common_kwargs).to(device)
+    else:
+        model = MultiLayerPerceptron(
+            input_dim=int(cfg["input_dim"]), output_dim=int(cfg["output_dim"]),
+            **common_kwargs
+        ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["learning_rate"]))
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -248,6 +254,13 @@ def select_model_targets(target, cfg):
     target layout.
     """
     output_dim = int(cfg.get("output_dim", 3))
+    if cfg.get("model_type") == "class_conditioned":
+        rows = []
+        for visible, accuracy_raw, accuracy_ripe, is_raw, is_ripe in target:
+            observation_row = ([accuracy_raw, 1.0 - accuracy_raw] if is_raw > 0.5
+                               else [1.0 - accuracy_ripe, accuracy_ripe])
+            rows.append([visible, *observation_row])
+        return np.asarray(rows, dtype=np.float32)
     if output_dim == 4:
         rows = []
         for visible, accuracy_raw, accuracy_ripe, is_raw, is_ripe in target:
@@ -285,6 +298,9 @@ def main(config_path):
     seed_everything(seed)
     device = resolve_device(str(root.get("device", "auto")))
     x, target, sources = load_training_rows(cfg, root)
+    if cfg.get("model_type") == "class_conditioned":
+        # Physical class is a model input, not a separate output head.
+        x = np.column_stack([x, target[:, 4]]).astype(np.float32)
     original_count = len(x)
     output_dim = int(cfg.get("output_dim", 3))
     model_target = select_model_targets(target, cfg)
@@ -308,6 +324,8 @@ def main(config_path):
         x, target, cfg, device, seed
     )
     output_labels = ["visibility", "accuracy_raw", "accuracy_ripe"]
+    if cfg.get("model_type") == "class_conditioned":
+        output_labels = ["observed_raw", "observed_ripe"]
     if output_dim == 4:
         output_labels = [
             "raw_raw", "raw_ripe", "ripe_raw", "ripe_ripe",
@@ -329,6 +347,8 @@ def main(config_path):
         "yaw_gate_slope": float(cfg.get("yaw_gate_slope", 50.0)),
         "informative_loss_weight": float(cfg.get("informative_loss_weight", 1.0)),
         "output_labels": output_labels,
+        "model_type": str(cfg.get("model_type", "legacy")),
+        "class_encoding": {"raw": 0, "ripe": 1} if cfg.get("model_type") == "class_conditioned" else None,
         "checkpoint": checkpoint, "best_validation_loss": loss,
         "final_train_loss": final_train_loss,
         "final_validation_loss": final_validation_loss,

@@ -53,7 +53,7 @@ from semantic_mpc_package.casadi_mlp_sensor import trained_mlp_sensor
 
 
 DEFAULT_CHECKPOINT = (
-    ROOT / "models" / "nmpc" / "fog" / "dual_mlp" / "5m" / "raw" / "best_model_epoch_38.pth"
+    ROOT / "models" / "nmpc" / "fog" / "class_conditioned" / "5m" / "best_model_epoch_37.pth"
 )
 
 

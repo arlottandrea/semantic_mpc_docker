@@ -29,7 +29,7 @@ SEMANTIC_SRC = ROOT / "src" / "semantic_mpc" / "semantic_mpc" / "src"
 if str(SEMANTIC_SRC) not in sys.path:
     sys.path.insert(0, str(SEMANTIC_SRC))
 
-from semantic_mpc_package.perception_model import MultiLayerPerceptron
+from semantic_mpc_package.perception_model import ClassConditionedMLP, MultiLayerPerceptron
 from semantic_mpc_package.perception_protocol import tree_observation_scores
 
 
@@ -176,6 +176,18 @@ def value_statistics(values):
 
 
 def load_model(cfg, checkpoint):
+    if cfg.get("model_type") == "class_conditioned":
+        model = ClassConditionedMLP(
+            hidden_size=int(cfg["hidden_size"]), hidden_layers=int(cfg["hidden_layers"]),
+            threshold=float(cfg["threshold"]), gate_slope=float(cfg["gate_slope"]),
+            yaw_harmonics=int(cfg.get("yaw_harmonics", 1)),
+            include_alignment_features=bool(cfg.get("include_alignment_features", False)),
+            output_temperature=float(cfg.get("output_temperature", 1.0)),
+            yaw_threshold_deg=float(cfg.get("yaw_threshold_deg", 30.0)),
+            yaw_gate_slope=float(cfg.get("yaw_gate_slope", 50.0)),
+        )
+        model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
+        return model.eval()
     model = MultiLayerPerceptron(
         input_dim=int(cfg["input_dim"]), hidden_size=int(cfg["hidden_size"]),
         hidden_layers=int(cfg["hidden_layers"]), output_dim=int(cfg["output_dim"]),
@@ -210,6 +222,13 @@ def main(args):
     for label, path in datasets:
         model = load_model(cfg, checkpoints[label])
         features, target_values = read_dataset(path, label, root, minimum, output_dim)
+        if cfg.get("model_type") == "class_conditioned":
+            class_value = 0.0 if label == "raw" else 1.0
+            features = np.column_stack([features, np.full(len(features), class_value, dtype=np.float32)])
+            if label == "raw":
+                target_values = np.column_stack([target_values[:, 0], 1.0 - target_values[:, 0]])
+            else:
+                target_values = np.column_stack([1.0 - target_values[:, 1], target_values[:, 1]])
         prediction = infer(model, features, args.batch_size)[:, :output_dim]
         total_poses = len(features)
         pose_features = features

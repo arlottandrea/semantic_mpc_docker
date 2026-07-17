@@ -256,7 +256,9 @@ class DataAssociationNode:
 
         # Binary perception protocol: finite rows are categorical detector
         # evidence [ripe, raw]. [nan, nan] explicitly means no measurement and
-        # therefore masks the Bayes update; it is not an MLP output class.
+        # therefore masks the Bayes update. The class-conditioned surrogate's
+        # true_class input is a latent Bayes hypothesis (0=raw, 1=ripe), not a
+        # field added to this ROS detector message.
         scores_with_neg = categorical_tree_scores(
             associated_fruits,
             len(self.tree_poses),
