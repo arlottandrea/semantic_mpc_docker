@@ -202,13 +202,15 @@ function line(a,color){c.strokeStyle=color;c.lineWidth=3;c.beginPath();a.forEach
         for record in records
     ]
     (output_root / "heatmaps_interactive.html").write_text("""<!doctype html><html><head><meta charset='utf-8'>
-<title>Interactive MLP heatmap comparison</title><style>html,body{height:100%%;margin:0;font:14px system-ui;background:#111;color:#eee}
-header{height:54px;box-sizing:border-box;padding:10px 18px;background:#20242a;display:flex;align-items:center;gap:14px}
-select{padding:7px 12px;font-size:14px}iframe{display:block;border:0;width:100%%;height:calc(100%% - 54px);background:#fff}</style></head>
-<body><header><strong>Dual-MLP interactive heatmaps</strong><label>Architecture <select id='variant'></select></label>
-<span>The embedded heatmap retains its relative-yaw slider.</span></header><iframe id='heatmap'></iframe>
-<script>const maps=%s,select=document.querySelector('#variant'),frame=document.querySelector('#heatmap');
-maps.forEach(m=>select.add(new Option(m.variant,m.path)));function load(){frame.src=select.value}select.onchange=load;load();</script></body></html>"""
+<title>Interactive MLP heatmap comparison</title><style>html,body{margin:0;font:14px system-ui;background:#111;color:#eee}
+header{position:sticky;top:0;z-index:10;padding:12px 18px;background:#20242a;display:flex;align-items:center;gap:16px;box-shadow:0 2px 8px #0008}
+input{width:min(620px,55vw)}.models{display:grid;grid-template-columns:1fr;gap:14px;padding:14px}.model{background:#20242a;border:1px solid #39414b;border-radius:8px;overflow:hidden}
+.model h2{margin:0;padding:10px 16px;font-size:17px}.model iframe{display:block;border:0;width:100%%;height:650px;background:#fff}</style></head>
+<body><header><strong>All dual-MLP heatmaps</strong><label>Global relative yaw <input id='yaw' type='range' min='0' max='18' value='9' step='1'></label><strong id='yawValue'>0.0 deg</strong></header>
+<main class='models' id='models'></main><script>const maps=%s,root=document.querySelector('#models'),slider=document.querySelector('#yaw'),label=document.querySelector('#yawValue');
+maps.forEach((m,i)=>{let section=document.createElement('section');section.className='model';section.innerHTML=`<h2>${m.variant}</h2><iframe data-index="${i}" src="${m.path}"></iframe>`;root.appendChild(section)});
+function sync(){label.textContent=(-180+20*Number(slider.value)).toFixed(1)+' deg';document.querySelectorAll('iframe').forEach(frame=>{try{let doc=frame.contentDocument,s=doc&&doc.querySelector('#yawSlider');if(s){s.value=slider.value;s.dispatchEvent(new Event('input'));let controls=doc.querySelector('.controls');if(controls)controls.style.display='none'}}catch(e){}})}
+slider.addEventListener('input',sync);document.querySelectorAll('iframe').forEach(frame=>frame.addEventListener('load',sync));sync();</script></body></html>"""
         % json.dumps(heatmaps), encoding="utf-8")
 
 
