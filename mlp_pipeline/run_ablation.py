@@ -44,7 +44,8 @@ def training_config(output_dir, label, variant, epochs):
         loss_function="mse", output_temperature=0.4, include_alignment_features=True,
         yaw_threshold_deg=30.0, yaw_gate_slope=50.0, threshold=5.0, gate_slope=10.0,
         validation_split=0.35, batch_size=64, epochs=epochs, learning_rate=1e-4,
-        min_detections_for_visibility=5, minimum_detection_score=0.0,
+        min_detections_for_visibility=6, minimum_detection_score=0.62,
+        evidence_count_midpoint=4.75, evidence_count_steepness=2.05,
         visibility_loss_weight=1.0, semantic_loss_weight=1.0,
         augment_fraction=0.0, augment_distance_margin=5.0, num_workers=0,
     )
