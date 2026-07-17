@@ -11,10 +11,17 @@ import cv2
 import numpy as np
 import torch
 
+ROOT = Path(__file__).resolve().parents[1]
+SEMANTIC_SRC = ROOT / "src" / "semantic_mpc" / "semantic_mpc" / "src"
+if str(SEMANTIC_SRC) not in sys.path:
+    sys.path.insert(0, str(SEMANTIC_SRC))
+
 try:
-    from .common import load_config, resolve_device, seed_everything, weighted_detection_score
+    from .common import load_config, resolve_device, seed_everything
 except ImportError:  # Direct script execution inside the Docker image.
-    from common import load_config, resolve_device, seed_everything, weighted_detection_score
+    from common import load_config, resolve_device, seed_everything
+
+from semantic_mpc_package.perception_protocol import tree_observation_scores
 
 
 def manifest_path(value):
@@ -97,17 +104,17 @@ def main(config_path):
                         raw_scores.append(score)
                     if cfg.get("save_annotations", True):
                         plot_one_box(box, image, label="{} {:.2f}".format(label, score), line_thickness=2)
-            ripe_value = weighted_detection_score(
-                ripe_scores, cfg["score_midpoint"], cfg["score_steepness"]
-            )
-            raw_value = weighted_detection_score(
-                raw_scores, cfg["score_midpoint"], cfg["score_steepness"]
+            observation = tree_observation_scores(
+                ripe_scores,
+                raw_scores,
+                minimum_score=float(cfg.get("minimum_detection_score", 0.0)),
+                minimum_tree_detections=int(cfg.get("minimum_tree_detections", 5)),
             )
             completed = dict(record)
             completed.update({
                 "Ripe_scores": repr(ripe_scores),
                 "Raw_scores": repr(raw_scores),
-                "tree_score": float(np.clip(ripe_value - raw_value + 0.5, 0.0, 1.0)),
+                "tree_score": float(observation[0]) if np.all(np.isfinite(observation)) else float("nan"),
             })
             rows.append(completed)
             if cfg.get("save_annotations", True):

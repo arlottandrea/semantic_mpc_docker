@@ -18,6 +18,8 @@ dataset:
   raw_class: Raw_Apple
   score_midpoint: 7
   score_steepness: 10.0
+  minimum_detection_score: 0.0
+  minimum_tree_detections: 5
   save_annotations: true
 
 training:
@@ -46,7 +48,8 @@ training:
   epochs: 20
   learning_rate: 0.0001
   # An isolated fruit is not considered an observation of the whole tree.
-  min_detections_for_visibility: 3
+  min_detections_for_visibility: 5
+  minimum_detection_score: 0.0
   visibility_loss_weight: 1.0
   semantic_loss_weight: 1.0
   augment_fraction: 0.2

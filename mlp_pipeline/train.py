@@ -21,9 +21,11 @@ if str(SEMANTIC_SRC) not in sys.path:
     sys.path.insert(0, str(SEMANTIC_SRC))
 
 try:
-    from .common import load_config, resolve_device, seed_everything, weighted_detection_score
+    from .common import load_config, resolve_device, seed_everything
 except ImportError:
-    from common import load_config, resolve_device, seed_everything, weighted_detection_score
+    from common import load_config, resolve_device, seed_everything
+
+from semantic_mpc_package.perception_protocol import tree_observation_scores
 
 
 def augment(x, y, fraction, margin, rng):
@@ -221,14 +223,14 @@ def load_training_rows(cfg, root):
         for row in rows:
             ripe_scores = [float(value) for value in ast.literal_eval(row["Ripe_scores"])]
             raw_scores = [float(value) for value in ast.literal_eval(row["Raw_scores"])]
-            visible = float(len(ripe_scores) + len(raw_scores) >= minimum)
-            ripe_evidence = weighted_detection_score(
-                ripe_scores, root["dataset"]["score_midpoint"], root["dataset"]["score_steepness"]
+            observation = tree_observation_scores(
+                ripe_scores,
+                raw_scores,
+                minimum_score=float(cfg.get("minimum_detection_score", 0.0)),
+                minimum_tree_detections=minimum,
             )
-            raw_evidence = weighted_detection_score(
-                raw_scores, root["dataset"]["score_midpoint"], root["dataset"]["score_steepness"]
-            )
-            p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
+            visible = float(np.all(np.isfinite(observation)))
+            p_ripe = float(observation[0]) if visible else 0.5
             features.append([float(row[k]) for k in ("x", "y", "yaw")])
             # Last two values are training-only masks for the physical class.
             targets.append([visible, max(0.5, 1.0 - p_ripe), max(0.5, p_ripe),

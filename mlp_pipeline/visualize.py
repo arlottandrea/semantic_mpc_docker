@@ -19,9 +19,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 try:
-    from .common import load_config, weighted_detection_score
+    from .common import load_config
 except ImportError:
-    from common import load_config, weighted_detection_score
+    from common import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +30,7 @@ if str(SEMANTIC_SRC) not in sys.path:
     sys.path.insert(0, str(SEMANTIC_SRC))
 
 from semantic_mpc_package.perception_model import MultiLayerPerceptron
+from semantic_mpc_package.perception_protocol import tree_observation_scores
 
 
 def wrap_angle(angle):
@@ -75,15 +76,15 @@ def read_dataset(path, label, root, minimum, output_dim):
     for row in rows:
         ripe_scores = [float(value) for value in ast.literal_eval(row["Ripe_scores"])]
         raw_scores = [float(value) for value in ast.literal_eval(row["Raw_scores"])]
-        ripe_evidence = weighted_detection_score(
-            ripe_scores, root["dataset"]["score_midpoint"], root["dataset"]["score_steepness"]
+        observation = tree_observation_scores(
+            ripe_scores,
+            raw_scores,
+            minimum_score=float(root["training"].get("minimum_detection_score", 0.0)),
+            minimum_tree_detections=minimum,
         )
-        raw_evidence = weighted_detection_score(
-            raw_scores, root["dataset"]["score_midpoint"], root["dataset"]["score_steepness"]
-        )
-        p_ripe = float(np.clip(ripe_evidence - raw_evidence + 0.5, 0.0, 1.0))
+        visible = float(np.all(np.isfinite(observation)))
+        p_ripe = float(observation[0]) if visible else 0.5
         features.append([float(row[key]) for key in ("x", "y", "yaw")])
-        visibility = float(len(ripe_scores) + len(raw_scores) >= minimum)
         raw_accuracy = max(0.5, 1.0 - p_ripe)
         ripe_accuracy = max(0.5, p_ripe)
         if output_dim == 4:
